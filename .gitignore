@@ -1,0 +1,25 @@
+# Node
+node_modules/
+dist/
+*.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Backend data
+backend/data/
+backend/backup/
+backend/logs/
+backend/*.db
+
+# Env & IDE
+.env
+.idea/
+.vscode/
+*.log
+
+# Agent workspace
+.workbuddy/
