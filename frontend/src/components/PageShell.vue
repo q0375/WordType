@@ -39,7 +39,7 @@ function goBack() {
 <style scoped>
 .page-shell {
   min-height: 100vh;
-  background: #f8fafc;
+  background: var(--wt-bg);
 }
 .page-main {
   max-width: 1200px;
@@ -63,12 +63,12 @@ function goBack() {
   margin: 0;
   font-size: 24px;
   font-weight: 700;
-  color: #111827;
+  color: var(--wt-text);
 }
 .page-subtitle {
   margin: 4px 0 0;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--wt-text-3);
 }
 .header-right {
   display: flex;

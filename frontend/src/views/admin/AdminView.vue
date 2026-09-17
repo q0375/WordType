@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ref, watch, onMounted } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import PageShell from '../../components/PageShell.vue';
 import { adminApi } from '../../api';
 
@@ -12,14 +12,11 @@ const userStatus = ref('all');
 const codes = ref<any[]>([]);
 const codesTotal = ref(0);
 const codeStatus = ref('');
-const ai = ref<any>(null);
-const aiForm = ref<any>({ engine: 'rule', api_base_url: '', api_key: '', model_name: '', temperature: 0.7, timeout_s: 30, enabled: false });
-const testResult = ref<any>(null);
 
 onMounted(() => {
   loadUsers();
   loadCodes();
-  loadAI();
+  loadDevSummary();
 });
 
 async function loadUsers() {
@@ -62,26 +59,57 @@ async function toggleCode(c: any) {
   loadCodes();
 }
 
-async function loadAI() {
-  const { data } = await adminApi.aiConfig();
-  ai.value = data;
-  aiForm.value = { ...data, api_key: '' };
+// ---- 测试数据调整（dev-data） ----
+const devUser = ref<number | null>(null); // null = 管理员自己
+const devSummary = ref<any>(null);
+const devSeeding = ref(false);
+const dev = ref({
+  high_error_n: 10,
+  danger_due_n: 5,
+  inactive_days: 0,
+  weak_bigram_n: 5,
+  typing_count: 30,
+  typing_wpm: 40,
+  typing_accuracy: 0.9,
+  game_count: 10,
+});
+
+async function loadDevSummary() {
+  const { data } = await adminApi.devdataSummary(devUser.value ?? undefined);
+  devSummary.value = data;
 }
 
-async function saveAI() {
-  const patch: any = { ...aiForm.value };
-  if (!patch.api_key) delete patch.api_key;
-  ai.value = await adminApi.putAiConfig(patch).then((r) => r.data);
-  ElMessage.success('AI 配置已保存（key 加密存储，不回显明文）');
+async function seedDevData() {
+  devSeeding.value = true;
+  try {
+    const p: any = { target_user_id: devUser.value ?? undefined };
+    for (const [k, v] of Object.entries(dev.value)) {
+      if (v && v > 0) p[k] = v;
+    }
+    const { data } = await adminApi.devdataSeed(p);
+    devSummary.value = data.summary;
+    await ElMessageBox.alert(data.done.join('\n') || '未选择任何注入项', '注入完成');
+  } finally {
+    devSeeding.value = false;
+  }
 }
 
-async function testAI() {
-  testResult.value = await adminApi.testAiConfig().then((r) => r.data);
+async function clearDevData() {
+  await ElMessageBox.confirm('将删除该用户的全部学习数据（词统计/错题/打字/游戏/考核/复习队列等），不可恢复。确认？', '清空学习数据', {
+    type: 'warning',
+    confirmButtonText: '全部清空',
+    confirmButtonClass: 'el-button--danger',
+  });
+  const { data } = await adminApi.devdataClear(devUser.value ?? undefined);
+  devSummary.value = data.summary;
+  ElMessage.success(`已清除 ${data.cleared_rows} 行数据`);
 }
+
+watch(devUser, loadDevSummary);
 </script>
 
 <template>
-  <PageShell title="管理后台" subtitle="用户 · 邀请码 · AI 配置（admin）">
+  <PageShell title="管理后台" subtitle="用户 · 邀请码 · 测试数据（admin）">
     <el-tabs v-model="tab">
       <!-- 用户管理 -->
       <el-tab-pane label="用户管理" name="users">
@@ -145,46 +173,65 @@ async function testAI() {
         </el-table>
       </el-tab-pane>
 
-      <!-- AI 配置 -->
-      <el-tab-pane label="AI 配置" name="ai">
-        <el-card shadow="never" class="ai-card" v-if="aiForm">
-          <el-form label-width="140px">
-            <el-form-item label="建议引擎">
-              <el-radio-group v-model="aiForm.engine">
-                <el-radio value="rule">规则引擎（免费）</el-radio>
-                <el-radio value="llm">LLM（OpenAI 兼容）</el-radio>
-              </el-radio-group>
-            </el-form-item>
-            <el-form-item label="启用 LLM">
-              <el-switch v-model="aiForm.enabled" />
-            </el-form-item>
-            <el-form-item label="API 基地址">
-              <el-input v-model="aiForm.api_base_url" placeholder="https://api.example.com/v1" />
-            </el-form-item>
-            <el-form-item label="API Key">
-              <el-input v-model="aiForm.api_key" type="password" show-password :placeholder="ai?.api_key_masked ? `已配置（${ai.api_key_masked}），留空则不修改` : '输入新 Key'" />
-            </el-form-item>
-            <el-form-item label="模型名">
-              <el-input v-model="aiForm.model_name" placeholder="gpt-4o-mini 等" />
-            </el-form-item>
-            <el-form-item label="温度">
-              <el-input-number v-model="aiForm.temperature" :min="0" :max="2" :step="0.1" />
-            </el-form-item>
-            <el-form-item label="超时（秒）">
-              <el-input-number v-model="aiForm.timeout_s" :min="1" :max="300" />
-            </el-form-item>
-            <el-form-item>
-              <el-button type="primary" @click="saveAI">保存</el-button>
-              <el-button @click="testAI">连通性测试</el-button>
+      <!-- 测试数据调整 -->
+      <el-tab-pane label="测试数据" name="devdata">
+        <el-card shadow="never" class="ai-card">
+          <el-form label-width="150px">
+            <el-form-item label="目标用户">
+              <el-select v-model="devUser" placeholder="我自己（admin）" clearable filterable style="width: 300px">
+                <el-option v-for="u in users" :key="u.id" :label="`#${u.id} ${u.username}（${u.role}）`" :value="u.id" />
+              </el-select>
             </el-form-item>
           </el-form>
-          <el-alert
-            v-if="testResult"
-            :type="testResult.ok ? 'success' : 'error'"
-            :closable="false"
-            :title="`延迟 ${testResult.latency_ms}ms · ${testResult.message}`"
-          />
-          <p class="hint">调用失败将静默回落规则引擎；手动刷新限 3 次/人/日；key AES-GCM 加密存储，永不回显明文。</p>
+
+          <el-descriptions v-if="devSummary" :column="3" size="small" border style="margin-bottom: 8px">
+            <el-descriptions-item label="词统计条数">{{ devSummary.word_stat_total }}</el-descriptions-item>
+            <el-descriptions-item label="高错误率词">{{ devSummary.high_error }}</el-descriptions-item>
+            <el-descriptions-item label="高危明日到期">{{ devSummary.danger_due_tomorrow }}</el-descriptions-item>
+            <el-descriptions-item label="活跃天数">{{ devSummary.activity_days }}</el-descriptions-item>
+            <el-descriptions-item label="打字记录">{{ devSummary.typing_records }}</el-descriptions-item>
+            <el-descriptions-item label="游戏记录">{{ devSummary.game_records }}</el-descriptions-item>
+            <el-descriptions-item label="错题（未攻克）">{{ devSummary.wrong_book }}</el-descriptions-item>
+            <el-descriptions-item label="考核记录">{{ devSummary.exam_records }}</el-descriptions-item>
+            <el-descriptions-item label="指法统计">{{ devSummary.letter_stats }}</el-descriptions-item>
+          </el-descriptions>
+
+          <el-divider content-position="left">注入测试数据（0 = 跳过该项）</el-divider>
+          <el-form label-width="150px">
+            <el-form-item label="高错误率词数">
+              <el-input-number v-model="dev.high_error_n" :min="0" :max="200" />
+              <span class="field-hint">错误率 &gt;60%，触发「专项练习」建议并入错题本</span>
+            </el-form-item>
+            <el-form-item label="高危明日到期词数">
+              <el-input-number v-model="dev.danger_due_n" :min="0" :max="200" />
+              <span class="field-hint">触发「复习」建议并写入复习队列</span>
+            </el-form-item>
+            <el-form-item label="清除近 N 天活跃">
+              <el-input-number v-model="dev.inactive_days" :min="0" :max="30" />
+              <span class="field-hint">≥7 天触发「连续未学」建议</span>
+            </el-form-item>
+            <el-form-item label="弱指法组合数">
+              <el-input-number v-model="dev.weak_bigram_n" :min="0" :max="200" />
+              <span class="field-hint">触发「指法专项」建议</span>
+            </el-form-item>
+            <el-form-item label="打字记录条数">
+              <el-input-number v-model="dev.typing_count" :min="0" :max="200" />
+              <span class="field-hint">随机分布在近 7 天，驱动趋势图</span>
+            </el-form-item>
+            <el-form-item label="打字 WPM / 正确率">
+              <el-input-number v-model="dev.typing_wpm" :min="5" :max="300" />
+              <el-input-number v-model="dev.typing_accuracy" :min="0.1" :max="1" :step="0.01" style="margin-left: 8px" />
+            </el-form-item>
+            <el-form-item label="游戏记录条数">
+              <el-input-number v-model="dev.game_count" :min="0" :max="200" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="devSeeding" @click="seedDevData">注入数据</el-button>
+              <el-button @click="loadDevSummary">刷新统计</el-button>
+              <el-button type="danger" plain @click="clearDevData">清空该用户全部学习数据</el-button>
+            </el-form-item>
+          </el-form>
+          <p class="hint">注入/清空后当日 AI 建议缓存自动失效，仪表盘与建议立即按新数据重算。仅测试用途。</p>
         </el-card>
       </el-tab-pane>
     </el-tabs>
@@ -204,6 +251,11 @@ async function testAI() {
 }
 .hint {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--wt-text-4);
+}
+.field-hint {
+  font-size: 12px;
+  color: var(--wt-text-4);
+  margin-left: 10px;
 }
 </style>

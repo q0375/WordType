@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.errors import AppError
@@ -65,6 +65,8 @@ async def register(db: AsyncSession, username: str, password: str, invite_code: 
         if res.rowcount != 1:
             raise AppError("INVITE_CODE_INVALID", "邀请码无效")
 
+    # SQLite 会复用已删除用户的 id；若历史遗留了同 id 的配置行（孤儿数据），先清除再插入
+    await db.execute(delete(DailySetting).where(DailySetting.user_id == user.id))
     db.add(DailySetting(user_id=user.id))
     await db.flush()
     return auth_payload(user)

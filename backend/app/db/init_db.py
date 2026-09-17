@@ -29,6 +29,17 @@ async def init_db() -> None:
         if "game_key_sound" not in col_names:
             await conn.execute(text("ALTER TABLE daily_setting ADD COLUMN game_key_sound INTEGER NOT NULL DEFAULT 1"))
             logger.info("migrated daily_setting: added game_key_sound")
+        if "advice_engine" not in col_names:
+            await conn.execute(text("ALTER TABLE daily_setting ADD COLUMN advice_engine TEXT NOT NULL DEFAULT 'rule'"))
+            logger.info("migrated daily_setting: added advice_engine")
+        if "review_show_meaning" not in col_names:
+            await conn.execute(text("ALTER TABLE daily_setting ADD COLUMN review_show_meaning INTEGER NOT NULL DEFAULT 1"))
+            logger.info("migrated daily_setting: added review_show_meaning")
+
+        acols = {c[1] for c in (await conn.execute(text("PRAGMA table_info(advice_cache)"))).fetchall()}
+        if acols and "note" not in acols:
+            await conn.execute(text("ALTER TABLE advice_cache ADD COLUMN note TEXT NOT NULL DEFAULT ''"))
+            logger.info("migrated advice_cache: added note")
 
     s = get_settings()
     async with get_sessionmaker()() as db:

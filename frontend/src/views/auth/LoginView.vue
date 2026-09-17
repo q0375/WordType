@@ -33,7 +33,7 @@ async function submit() {
   <div class="auth-wrap">
     <el-card class="auth-card" shadow="never">
       <div class="brand-row">
-        <el-icon size="32" color="#2563EB"><Reading /></el-icon>
+        <el-icon size="32" color="var(--wt-primary)"><Reading /></el-icon>
         <h1>WordType</h1>
         <p class="subtitle">单词学习与打字速度练习系统</p>
       </div>
@@ -60,7 +60,7 @@ async function submit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f8fafc;
+  background: var(--wt-bg);
   padding: 16px;
 }
 .auth-card {
@@ -74,12 +74,12 @@ async function submit() {
 .brand-row h1 {
   margin: 8px 0 4px;
   font-size: 24px;
-  color: #111827;
+  color: var(--wt-text);
 }
 .subtitle {
   margin: 0;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--wt-text-3);
 }
 .submit-btn {
   width: 100%;
@@ -92,7 +92,7 @@ async function submit() {
 .admin-hint {
   margin-top: 12px;
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--wt-text-4);
   text-align: center;
 }
 </style>

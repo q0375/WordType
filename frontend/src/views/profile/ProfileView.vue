@@ -90,7 +90,7 @@ onMounted(async () => {
   gap: 16px;
 }
 .muted {
-  color: #6b7280;
+  color: var(--wt-text-3);
   font-size: 13px;
 }
 </style>

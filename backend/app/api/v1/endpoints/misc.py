@@ -2,13 +2,14 @@
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
-from sqlalchemy import text
+from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....db.engine import get_db, get_sessionmaker
-from ....models import User
-from ....schemas import WrongBookIn, WrongBookPatchIn
-from ....services import misc_service, tts_service
+from ....core.security import encrypt_secret
+from ....db.engine import get_db, get_sessionmaker, now_str, today_str
+from ....models import AdviceCache, User, UserAiConfig
+from ....schemas import UserAiConfigIn, WrongBookIn, WrongBookPatchIn
+from ....services import llm_advice, misc_service, tts_service
 from ..deps import get_current_user
 
 router = APIRouter()
@@ -56,6 +57,44 @@ async def get_advice(user: User = Depends(get_current_user), db: AsyncSession = 
     data = await misc_service.get_advice(db, user)
     await db.commit()
     return data
+
+
+# ---------- 用户自有 AI（LLM）凭据 ----------
+
+
+@router.get("/ai-config")
+async def get_ai_config(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    return llm_advice.mask(await llm_advice.load_user_config(db, user.id))
+
+
+@router.put("/ai-config")
+async def put_ai_config(payload: UserAiConfigIn, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    cfg = await llm_advice.load_user_config(db, user.id)
+    if cfg is None:
+        cfg = UserAiConfig(user_id=user.id)
+        db.add(cfg)
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("api_base_url") is not None:
+        cfg.api_base_url = data["api_base_url"].strip()
+    if data.get("model_name") is not None:
+        cfg.model_name = data["model_name"].strip()
+    if data.get("temperature") is not None:
+        cfg.temperature = data["temperature"]
+    if data.get("timeout_s") is not None:
+        cfg.timeout_s = data["timeout_s"]
+    if data.get("api_key"):  # 留空 = 不修改
+        cfg.api_key_enc = encrypt_secret(data["api_key"])
+    cfg.updated_at = now_str()
+    await db.flush()
+    # 凭据变更后当日建议缓存失效
+    await db.execute(delete(AdviceCache).where(AdviceCache.user_id == user.id, AdviceCache.date == today_str()))
+    await db.commit()
+    return llm_advice.mask(cfg)
+
+
+@router.post("/ai-config/test")
+async def test_ai_config(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    return await llm_advice.test(db, user.id)
 
 
 @router.post("/advice/refresh")

@@ -21,6 +21,7 @@ const loading = ref(true);
 
 const item = computed(() => queue.value[cursor.value] ?? null);
 const form = computed(() => settings.settings?.review_form ?? 'typing');
+const showMeaning = computed(() => (settings.settings?.review_show_meaning ?? 1) === 1);
 
 onMounted(async () => {
   await settings.load();
@@ -104,13 +105,22 @@ const tierLabel = (t: number) => (t === 0 ? '逾期' : t === 1 ? '高危' : '巩
 
       <!-- 打字默写 -->
       <template v-if="form === 'typing' && !feedback">
-        <p class="prompt">默写该词的英文拼写（提示：复习形式可在设置中更改）</p>
+        <template v-if="showMeaning">
+          <p class="word-meaning">{{ item.meaning || '（该词暂无释义）' }}</p>
+          <p class="word-phonetic" v-if="item.phonetic">{{ item.phonetic }}</p>
+          <p class="hint">看释义，默写英文拼写（释义显示可在设置中关闭）</p>
+        </template>
+        <template v-else>
+          <p class="prompt">听发音，默写该词的英文拼写（释义提示已关闭）</p>
+        </template>
         <el-input v-model="typed" size="large" placeholder="输入拼写后回车" @keyup.enter="submitTyping" />
       </template>
 
       <!-- 自评 -->
       <template v-else-if="form === 'self' && !feedback">
-        <p class="prompt">回想这个词，然后自评掌握程度</p>
+        <p class="word-spelling">{{ item.spelling }}</p>
+        <p class="word-phonetic" v-if="item.phonetic">{{ item.phonetic }}</p>
+        <p class="hint">回想该词的释义，然后自评掌握程度</p>
         <div class="rate-row">
           <el-button type="success" size="large" @click="submitSelf('know')">认识</el-button>
           <el-button type="warning" size="large" @click="submitSelf('vague')">模糊</el-button>
@@ -120,12 +130,16 @@ const tierLabel = (t: number) => (t === 0 ? '逾期' : t === 1 ? '高危' : '巩
 
       <!-- 选择 -->
       <template v-else-if="form === 'choice' && !feedback">
-        <p class="prompt">选择正确的释义</p>
+        <p class="word-spelling">{{ item.spelling }}</p>
+        <p class="word-phonetic" v-if="item.phonetic">{{ item.phonetic }}</p>
+        <p class="hint">回忆并输入该词的正确释义关键词</p>
         <el-input v-model="choiceMeaning" size="large" placeholder="输入该词的正确释义关键词" @keyup.enter="submitChoice" />
-        <p class="hint">（选择复习形式基于释义比对提交）</p>
       </template>
 
       <div v-if="feedback" class="fb" :class="feedback.result">
+        <p v-if="item" class="fb-word">
+          {{ item.spelling }} <span class="word-phonetic" v-if="item.phonetic">{{ item.phonetic }}</span> · {{ item.meaning }}
+        </p>
         <p>
           {{ feedback.result === 'correct' ? '答对 ✔' : feedback.result === 'near' ? '近似正确（间隔减半）' : '答错 ✘' }}
         </p>
@@ -157,7 +171,7 @@ const tierLabel = (t: number) => (t === 0 ? '逾期' : t === 1 ? '高危' : '巩
 }
 .quota {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--wt-text-3);
 }
 .q-card {
   max-width: 640px;
@@ -172,7 +186,27 @@ const tierLabel = (t: number) => (t === 0 ? '逾期' : t === 1 ? '高危' : '巩
   font-size: 18px;
   text-align: center;
   margin: 24px 0;
-  color: #111827;
+  color: var(--wt-text);
+}
+.word-meaning {
+  font-size: 24px;
+  font-weight: 600;
+  text-align: center;
+  margin: 24px 0 4px;
+  color: var(--wt-text);
+}
+.word-spelling {
+  font-size: 30px;
+  font-weight: 700;
+  text-align: center;
+  margin: 24px 0 4px;
+  color: var(--wt-text);
+}
+.word-phonetic {
+  text-align: center;
+  color: var(--wt-text-3);
+  margin: 0 0 4px;
+  font-size: 14px;
 }
 .rate-row {
   display: flex;
@@ -186,17 +220,17 @@ const tierLabel = (t: number) => (t === 0 ? '逾期' : t === 1 ? '高危' : '巩
   font-weight: 600;
 }
 .fb.correct {
-  color: #10b981;
+  color: var(--wt-success);
 }
 .fb.near {
-  color: #f59e0b;
+  color: var(--wt-warning);
 }
 .fb.wrong {
-  color: #ef4444;
+  color: var(--wt-danger);
 }
 .sm2 {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--wt-text-3);
   font-weight: 400;
 }
 .foot-row {
@@ -206,6 +240,6 @@ const tierLabel = (t: number) => (t === 0 ? '逾期' : t === 1 ? '高危' : '巩
 }
 .hint {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--wt-text-4);
 }
 </style>

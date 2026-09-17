@@ -49,10 +49,12 @@ class SettingsIn(BaseModel):
     game_difficulty: str | None = None
     game_limited_mode: int | None = Field(default=None, ge=0, le=1)
     game_key_sound: int | None = Field(default=None, ge=0, le=1)
+    advice_engine: str | None = Field(default=None, pattern="^(rule|llm)$")
     exam_time_limit: int | None = Field(default=None, ge=5, le=120)
     exam_pass_score: int | None = Field(default=None, ge=0, le=100)
     exam_loose_match: int | None = Field(default=None, ge=0, le=1)
     review_wrong_reshow: int | None = Field(default=None, ge=0, le=1)
+    review_show_meaning: int | None = Field(default=None, ge=0, le=1)
 
 
 class BookIn(BaseModel):
@@ -210,11 +212,26 @@ class InviteCodePatchIn(BaseModel):
     is_active: int = Field(ge=0, le=1)
 
 
-class AIConfigIn(BaseModel):
-    engine: str | None = None
+class UserAiConfigIn(BaseModel):
+    """用户自有 LLM 凭据（api_key 仅写入，永不回显；留空表示不修改）。"""
+
     api_base_url: str | None = None
     api_key: str | None = None
     model_name: str | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
     timeout_s: int | None = Field(default=None, ge=1, le=300)
-    enabled: bool | None = None
+
+
+class DevDataSeedIn(BaseModel):
+    """管理员测试数据注入参数（全部可省略，省略项不注入）。"""
+
+    # 注意：字段名不可用 user_id —— 全局中间件红线禁止 body 携带 user_id
+    target_user_id: int | None = None  # 缺省=管理员自己
+    high_error_n: int | None = Field(default=None, ge=1, le=200)
+    danger_due_n: int | None = Field(default=None, ge=1, le=200)
+    inactive_days: int | None = Field(default=None, ge=1, le=30)
+    weak_bigram_n: int | None = Field(default=None, ge=1, le=200)
+    typing_count: int | None = Field(default=None, ge=1, le=200)
+    typing_wpm: float | None = Field(default=None, ge=5, le=300)
+    typing_accuracy: float | None = Field(default=None, ge=0.1, le=1)
+    game_count: int | None = Field(default=None, ge=1, le=200)

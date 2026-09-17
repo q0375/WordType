@@ -1,23 +1,28 @@
 """错题本 / 统计 / AI建议 / 设置 / 导出 业务。"""
 
+import asyncio
 import csv
 import io
 import json
 import zipfile
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.errors import AppError
 from ..core.idempotency import find_replay, save_snapshot
-from ..db.engine import today_str
+from ..db.engine import get_sessionmaker, today_str
 from ..domain import advice as advice_mod
 from ..models import (
     AdviceCache, DailyActivity, DailySetting, ExamRecord, GameRecord, LetterStat,
     TypingRecord, UserWordStat, WrongBookItem, Word,
 )
+from . import llm_advice as llm_advice_mod
 from .stat_ops import get_word, touch_wrongbook
+
+# 后台 LLM 建议生成中去重（user_id, date）
+_llm_jobs: set[tuple[int, str]] = set()
 
 
 # ---------- 错题本 ----------
@@ -192,6 +197,7 @@ async def get_advice(db: AsyncSession, user) -> dict:
     return {
         "date": today,
         "engine": cached.engine,
+        "note": getattr(cached, "note", "") or "",
         "items": json.loads(cached.items_json),
         "refresh_count": cached.refresh_count,
         "refresh_limit": 3,
@@ -227,7 +233,7 @@ async def _generate_advice(db: AsyncSession, user, today: str) -> dict:
         )
     ).scalar_one()
 
-    # ③ 连续 7 天未学
+    # ③ 连续 7 天未学（仅限有过学习历史的用户；零历史新用户走新手引导）
     since = (date.today() - timedelta(days=6)).isoformat()
     active = (
         await db.execute(
@@ -236,7 +242,13 @@ async def _generate_advice(db: AsyncSession, user, today: str) -> dict:
             )
         )
     ).scalar_one()
-    inactive_days = 7 if active == 0 else 0
+    learned_words = (
+        await db.execute(
+            select(func.count()).select_from(UserWordStat).where(UserWordStat.user_id == user.id)
+        )
+    ).scalar_one()
+    inactive_days = 7 if (active == 0 and learned_words > 0) else 0
+    new_user = learned_words == 0
 
     # ④ 指法专项（bigram Top5：错误多优先，其次慢）
     bigram_rows = (
@@ -248,12 +260,83 @@ async def _generate_advice(db: AsyncSession, user, today: str) -> dict:
     ).scalars().all()
     weak = [r.letter for r in bigram_rows if r.error_count > 0 or r.avg_delay_ms > 0]
 
-    items = advice_mod.build_items(high_error, danger_due, inactive_days if inactive_days else None, weak)
+    # ⑤ 近 7 天趋势（供 LLM 上下文）
+    trend = (
+        await db.execute(
+            select(func.avg(TypingRecord.wpm), func.avg(TypingRecord.accuracy)).select_from(TypingRecord).where(
+                TypingRecord.user_id == user.id, TypingRecord.created_at >= since, TypingRecord.wpm.is_not(None)
+            )
+        )
+    ).first()
+    context = {
+        "high_error_words": [{"spelling": w["spelling"], "wrong_count": w["wrong_count"], "total_count": w["total_count"]} for w in high_error[:10]],
+        "danger_due_tomorrow": danger_due,
+        "active_days_last_7": active,
+        "weak_bigrams": weak,
+        "recent_7d": {"avg_wpm": round(trend[0], 1) if trend and trend[0] else None, "avg_accuracy": round(trend[1], 3) if trend and trend[1] else None},
+    }
 
-    cached = AdviceCache(user_id=user.id, date=today, items_json=json.dumps(items, ensure_ascii=False), engine="rule", generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    # 引擎选择：用户自选（设置页 advice_engine）；选 llm 但 LLM 不可用/失败时回退规则引擎
+    pref = (
+        await db.execute(select(DailySetting.advice_engine).where(DailySetting.user_id == user.id))
+    ).scalar_one_or_none()
+    engine, note = "rule", ""
+    items = advice_mod.build_items(high_error, danger_due, inactive_days, weak, new_user=new_user)
+    if (pref or "rule") == "llm":
+        cfg = await llm_advice_mod.load_user_config(db, user.id)
+        if not llm_advice_mod.config_ready(cfg):
+            note = "AI 未配置完整（需要基地址、Key、模型名），已回退规则引擎"
+        else:
+            # LLM 同步调用可能耗时 30s+，改为先返回规则建议占位，后台生成完成后覆盖缓存
+            note = "AI 建议生成中，稍候自动更新…"
+            _schedule_llm_advice(user.id, today, context)
+
+    cached = AdviceCache(user_id=user.id, date=today, items_json=json.dumps(items, ensure_ascii=False), engine=engine, note=note, generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     await db.merge(cached)
     await db.flush()
-    return {"date": today, "engine": "rule", "items": items, "refresh_count": 0, "refresh_limit": 3}
+    return {"date": today, "engine": engine, "note": note, "items": items, "refresh_count": 0, "refresh_limit": 3}
+
+
+# 后台任务强引用，防止被 GC 回收
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _schedule_llm_advice(user_id: int, today: str, context: dict) -> None:
+    """调度后台任务调用 LLM 生成建议并覆盖当日缓存（去重，结果含失败原因）。"""
+    if (user_id, today) in _llm_jobs:
+        return
+    _llm_jobs.add((user_id, today))
+
+    async def _job():
+        try:
+            sm = get_sessionmaker()
+            async with sm() as db:
+                llm_items, llm_note = await llm_advice_mod.generate(db, user_id, context)
+                cached = (
+                    await db.execute(select(AdviceCache).where(AdviceCache.user_id == user_id, AdviceCache.date == today))
+                ).scalar_one_or_none()
+                if cached is None:
+                    return  # 期间缓存被清（如切换引擎/跨天），放弃本次写入，下次访问会重新生成
+                if llm_items:
+                    cached.engine, cached.note = "llm", ""
+                    cached.items_json = json.dumps(llm_items, ensure_ascii=False)
+                else:
+                    cached.note = f"AI 调用失败，已回退规则引擎：{llm_note}"
+                cached.generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                await db.commit()
+        except Exception:  # noqa: BLE001 — 后台任务绝不影响主服务
+            import logging
+
+            logging.getLogger(__name__).warning("background llm advice failed", exc_info=True)
+        finally:
+            _llm_jobs.discard((user_id, today))
+
+    try:
+        task = asyncio.create_task(_job())
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
+    except RuntimeError:  # 无事件循环（如离线脚本），放弃调度
+        _llm_jobs.discard((user_id, today))
 
 
 async def refresh_advice(db: AsyncSession, user) -> dict:
@@ -288,8 +371,10 @@ async def get_settings_full(db: AsyncSession, user) -> dict:
         "review_form": s.review_form, "dictation_show_seconds": s.dictation_show_seconds,
         "practice_group_size": s.practice_group_size, "game_difficulty": s.game_difficulty,
         "game_limited_mode": s.game_limited_mode, "game_key_sound": s.game_key_sound, "exam_time_limit": s.exam_time_limit,
+        "advice_engine": getattr(s, "advice_engine", None) or "rule",
         "exam_pass_score": s.exam_pass_score, "exam_loose_match": s.exam_loose_match,
         "review_wrong_reshow": s.review_wrong_reshow,
+        "review_show_meaning": getattr(s, "review_show_meaning", 1),
         "server_date": today_str(), "server_tz": "Asia/Shanghai",
     }
     return data
@@ -302,10 +387,15 @@ async def put_settings(db: AsyncSession, user, payload) -> dict:
     if s is None:
         s = DailySetting(user_id=user.id)
         db.add(s)
+    old_engine = getattr(s, "advice_engine", None) or "rule"
     for k, v in payload.model_dump(exclude_unset=True).items():
         if v is not None:
             setattr(s, k, v)
     await db.flush()
+    # 建议引擎切换后当日缓存失效，下次访问按新引擎重算
+    new_engine = getattr(s, "advice_engine", None) or "rule"
+    if new_engine != old_engine:
+        await db.execute(delete(AdviceCache).where(AdviceCache.user_id == user.id, AdviceCache.date == today_str()))
     return await get_settings_full(db, user)
 
 

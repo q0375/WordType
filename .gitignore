@@ -23,3 +23,6 @@ backend/*.db
 
 # Agent workspace
 .workbuddy/
+
+# Deploy archive (contains backend/.env secrets)
+wordtype-deploy.tar.gz

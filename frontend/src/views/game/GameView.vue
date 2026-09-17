@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { ElMessage } from 'element-plus';
 import { VideoPause, VideoPlay } from '@element-plus/icons-vue';
+import PageShell from '../../components/PageShell.vue';
 import { booksApi, gameApi } from '../../api';
 import { useSettingsStore } from '../../stores/settings';
 import { uuid } from '../../core/idempotency';
@@ -67,19 +68,27 @@ const H = 560;
 const DANGER_Y = 505;
 
 const DIFF = {
-  easy: { base: 30, accel: 0.9, maxOnScreen: 2, spawnMs: 3200 },
-  normal: { base: 42, accel: 1.4, maxOnScreen: 3, spawnMs: 2600 },
-  hard: { base: 58, accel: 2.0, maxOnScreen: 4, spawnMs: 2000 },
+  easy: { base: 26, accel: 0.8, maxOnScreen: 2, spawnMs: 3400 },
+  normal: { base: 46, accel: 1.6, maxOnScreen: 3, spawnMs: 2400 },
+  hard: { base: 72, accel: 2.6, maxOnScreen: 4, spawnMs: 1600 },
 };
 
 const comboMult = computed(() => (combo.value >= 20 ? 3 : combo.value >= 15 ? 2.5 : combo.value >= 10 ? 2 : combo.value >= 5 ? 1.5 : 1));
 const lockedWord = computed(() => drops.find((d) => d.typed.length > 0) ?? null);
 const inputProgress = computed(() => (lockedWord.value ? lockedWord.value.typed.length / lockedWord.value.spelling.length : 0));
 const mmss = computed(() => `${String(Math.floor(timeLeft.value / 60)).padStart(2, '0')}:${String(timeLeft.value % 60).padStart(2, '0')}`);
+const diffLabel = computed(() => ({ easy: '简单', normal: '普通', hard: '困难' })[difficulty.value] ?? '普通');
 
-// ---- 沉浸模式：页面深色渐变（挂载即生效，离开页面还原） ----
+// ---- 沉浸模式：仅对局中（playing）整页转深色、导航上收；配置/结算为常规浅色页 ----
+watch(
+  phase,
+  (p) => {
+    document.body.classList.toggle('game-dark', p === 'playing');
+  },
+  { immediate: true },
+);
+
 onMounted(async () => {
-  document.body.classList.add('game-dark');
   window.addEventListener('keydown', onKeydown);
   await settings.load();
   const { data } = await booksApi.list('all');
@@ -110,7 +119,11 @@ async function pickBook(id: number) {
 }
 
 async function startGame() {
-  const chapterIds = chapterId.value ? [chapterId.value] : bookId.value ? [] : [];
+  if (!bookId.value) {
+    ElMessage.warning('请先选择词库再开始游戏');
+    return;
+  }
+  const chapterIds = chapterId.value ? [chapterId.value] : [];
   try {
     const { data } = await gameApi.start(chapterIds, difficulty.value, mode.value);
     session = data;
@@ -135,6 +148,7 @@ async function startGame() {
   finalResult.value = null;
   inputFlash.value = '';
   inputShake.value = false;
+  await nextTick(); // 对局画布为 v-if 分支挂载，等待 DOM 更新后再取上下文
   ctx = canvasRef.value?.getContext('2d') ?? null;
   // 开局提示：中央半透明浮层 1.5s 自动淡出
   showHint.value = true;
@@ -167,15 +181,17 @@ function loop(ts: number) {
   }
   elapsed += dt;
   const diff = curDiff();
+  // 含暂停前累计：暂停不清零，速度加成与限时倒计时不得回退
+  const totalMs = elapsedBeforePause + elapsed;
 
   if (session.mode === 'timed') {
-    timeLeft.value = Math.max(0, 180 - Math.floor(elapsed / 1000));
+    timeLeft.value = Math.max(0, 180 - Math.floor(totalMs / 1000));
     if (timeLeft.value <= 0) return settle();
   }
 
   // 同屏词数随时间增加（1→3/4）
   spawnTimer -= dt;
-  const maxOn = Math.min(diff.maxOnScreen, 1 + Math.floor(elapsed / 25000));
+  const maxOn = Math.min(diff.maxOnScreen, 1 + Math.floor(totalMs / 25000));
   if (spawnTimer <= 0 && drops.length < maxOn) {
     const used = new Set(drops.map((d) => d.word_id));
     const avail = session.words.filter((w: any) => !used.has(w.word_id) && !landedLogs.some((l) => l.word_id === w.word_id));
@@ -197,7 +213,7 @@ function loop(ts: number) {
     spawnTimer = diff.spawnMs;
   }
 
-  const speedMul = 1 + Math.floor(elapsed / 15000) * (diff.accel / 10);
+  const speedMul = 1 + Math.floor(totalMs / 15000) * (diff.accel / 10);
   for (const d of drops) d.y += (d.speed * speedMul * dt) / 1000;
 
   // 触线落地 → 扣心
@@ -352,7 +368,7 @@ async function settle() {
         session_id: session.session_id,
         difficulty: session.difficulty ?? difficulty.value,
         mode: session.mode ?? mode.value,
-        duration_ms: elapsedBeforePause + elapsed,
+        duration_ms: Math.round(elapsedBeforePause + elapsed),
         score: score.value,
         max_combo: maxCombo.value,
         correct_count: destroyedLogs.length,
@@ -429,18 +445,18 @@ function mirrorClass(i: number) {
 </script>
 
 <template>
-  <div class="game-page">
-    <!-- 开局配置（深色面板，无独立标题） -->
-    <div v-if="phase === 'idle'" class="panel cfg-panel">
-      <h2 class="panel-title">打字游戏</h2>
-      <el-form label-width="90px" class="cfg-form">
+  <!-- 配置 / 结算：常规浅色页面 -->
+  <PageShell v-if="phase !== 'playing'" title="游戏模式" subtitle="下坠打字 · Combo 阶梯 · 防作弊结算">
+    <!-- 开局配置 -->
+    <el-card v-if="phase === 'idle'" shadow="never" class="cfg-card">
+      <el-form label-width="90px">
         <el-form-item label="词库">
-          <el-select v-model="bookId" placeholder="选择词库" style="width: 240px" @change="pickBook">
+          <el-select v-model="bookId" placeholder="选择词库" style="width: 220px" @change="pickBook">
             <el-option v-for="b in books" :key="b.id" :label="`${b.name}（${b.word_count} 词）`" :value="b.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="章节">
-          <el-select v-model="chapterId" placeholder="整本词库" clearable style="width: 240px">
+          <el-select v-model="chapterId" placeholder="整本词库" clearable style="width: 220px">
             <el-option v-for="c in chapters" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
         </el-form-item>
@@ -457,13 +473,28 @@ function mirrorClass(i: number) {
             <el-radio-button value="hard">困难</el-radio-button>
           </el-radio-group>
         </el-form-item>
-        <el-button type="primary" size="large" @click="startGame">开始游戏</el-button>
-        <p class="hint">输入首字母锁定单词 → 整词敲对销毁得分（连击 ≥5/10/15/20 倍率 1.5/2/2.5/3）；词触红线或整词敲错扣一心；5 心耗尽结束。Esc 暂停。</p>
+        <el-button type="primary" size="large" :disabled="!bookId" @click="startGame">开始游戏</el-button>
+        <p class="hint">输入首字母锁定单词 → 整词敲对销毁得分（连击 ≥5/10/15/20 倍率 1.5/2/2.5/3）；词触红线或整词敲错扣一心；5 心耗尽结束。Esc 暂停。难度决定初始下落速度、随时间加速幅度与同屏词数（简单 26px/s / 普通 46px/s / 困难 72px/s）。</p>
       </el-form>
-    </div>
+    </el-card>
 
-    <!-- 对局 -->
-    <div v-show="phase === 'playing'" class="game-stage">
+    <!-- 结算 -->
+    <el-card v-else shadow="never" class="cfg-card">
+      <el-result
+        :icon="finalResult?.is_new_record ? 'success' : 'info'"
+        :title="`本局得分：${finalResult?.score ?? score}`"
+        :sub-title="finalResult ? `最高连击 ${maxCombo} · 历史最高 ${finalResult.max_score}${finalResult.is_new_record ? ' · 🎉新纪录！' : ''}` : '对局未入库（中断或校验失败）'"
+      />
+      <div class="hint-row">
+        <el-button type="primary" @click="phase = 'idle'">返回配置</el-button>
+        <el-button @click="startGame">再来一局</el-button>
+      </div>
+    </el-card>
+  </PageShell>
+
+  <!-- 对局：全屏沉浸深色 -->
+  <div v-else class="game-page">
+    <div class="game-stage">
       <div class="stage-wrap" :class="{ 'is-paused': paused }">
         <!-- 一体化悬浮状态栏 -->
         <div class="hud">
@@ -475,6 +506,7 @@ function mirrorClass(i: number) {
             <span v-if="combo >= 2" :key="combo" class="combo-pill">{{ combo }} Combo × {{ comboMult }}</span>
           </div>
           <div class="hud-right">
+            <span class="hud-diff" :class="difficulty">{{ diffLabel }}</span>
             <span v-if="mode === 'timed'" class="hud-time">{{ mmss }}</span>
             <button class="icon-btn" :title="paused ? '继续' : `暂停（剩 ${pausesLeft} 次）`" @click="togglePause">
               <el-icon :size="20"><VideoPause v-if="!paused" /><VideoPlay v-else /></el-icon>
@@ -504,68 +536,35 @@ function mirrorClass(i: number) {
         </Transition>
       </div>
 
-      <!-- 底部输入条：目标词逐字符高亮 -->
-      <div class="input-bar" :class="[inputFlash, { shake: inputShake }]">
-        <div v-if="lockedWord" class="word-mirror">
+      <!-- 底部输入条：锁定单词后才显示，逐字符高亮 -->
+      <div v-if="lockedWord" class="input-bar" :class="[inputFlash, { shake: inputShake }]">
+        <div class="word-mirror">
           <span v-for="(ch, i) in lockedWord.spelling.split('')" :key="i" class="mirror-ch" :class="mirrorClass(i)">{{ ch }}</span>
           <span class="caret">»</span>
         </div>
-        <div v-else class="word-mirror idle-mirror">输入首字母锁定单词…</div>
         <div class="progress-track">
           <div class="progress-fill" :style="{ width: `${inputProgress * 100}%` }"></div>
         </div>
-      </div>
-    </div>
-
-    <!-- 结算 -->
-    <div v-if="phase === 'over'" class="panel over-panel">
-      <div class="over-score">{{ finalResult?.score ?? score }}</div>
-      <p class="over-sub">
-        <template v-if="finalResult">
-          最高连击 {{ maxCombo }} · 历史最高 {{ finalResult.max_score }}
-          <span v-if="finalResult.is_new_record" class="new-record">🎉 新纪录！</span>
-        </template>
-        <template v-else>对局未入库（中断或校验失败）</template>
-      </p>
-      <div class="hint-row">
-        <el-button type="primary" @click="phase = 'idle'">返回配置</el-button>
-        <el-button @click="startGame">再来一局</el-button>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.game-page {
-  min-height: 100vh;
-  padding: 24px 0 48px;
-  color: #e5e7eb;
-}
-.panel {
-  width: 85%;
-  max-width: 1400px;
-  margin: 0 auto;
-  background: rgba(30, 33, 42, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 14px;
-  padding: 28px 32px;
-}
-.cfg-panel {
+.cfg-card {
   max-width: 640px;
-}
-.panel-title {
-  margin: 0 0 18px;
-  font-size: 22px;
-  font-weight: 700;
-  color: #fff;
-}
-.cfg-form :deep(.el-form-item__label) {
-  color: #9ca3af;
 }
 .hint {
   font-size: 12px;
   color: #9ca3af;
   margin-top: 12px;
+}
+
+/* ---- 对局区：全屏沉浸深色，85% 居中 ---- */
+.game-page {
+  min-height: 100vh;
+  padding: 24px 0 48px;
+  color: #e5e7eb;
 }
 
 /* ---- 对局区：85% 居中 ---- */
@@ -660,6 +659,28 @@ function mirrorClass(i: number) {
   min-width: 150px;
   justify-content: flex-end;
   pointer-events: auto;
+}
+.hud-diff {
+  padding: 2px 12px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 13px;
+  font-weight: 700;
+}
+.hud-diff.easy {
+  color: #52c41a;
+  border-color: rgba(82, 196, 26, 0.6);
+  background: rgba(82, 196, 26, 0.12);
+}
+.hud-diff.normal {
+  color: #f5c542;
+  border-color: rgba(245, 197, 66, 0.6);
+  background: rgba(245, 197, 66, 0.12);
+}
+.hud-diff.hard {
+  color: #ff4d4f;
+  border-color: rgba(255, 77, 79, 0.6);
+  background: rgba(255, 77, 79, 0.12);
 }
 .hud-time {
   color: #fff;
@@ -844,11 +865,6 @@ function mirrorClass(i: number) {
   color: #f5c542;
   margin-left: 6px;
 }
-.idle-mirror {
-  color: rgba(255, 255, 255, 0.3);
-  font-size: 16px;
-  letter-spacing: 1px;
-}
 .progress-track {
   height: 4px;
   background: rgba(255, 255, 255, 0.12);
@@ -863,29 +879,10 @@ function mirrorClass(i: number) {
   transition: width 0.08s linear;
 }
 
-/* ---- 结算 ---- */
-.over-panel {
-  text-align: center;
-  max-width: 640px;
-}
-.over-score {
-  font-size: 56px;
-  font-weight: 800;
-  color: #fff;
-  margin: 12px 0 8px;
-  font-variant-numeric: tabular-nums;
-}
-.over-sub {
-  color: #9ca3af;
-  margin: 0 0 18px;
-}
-.new-record {
-  color: #f5c542;
-  font-weight: 700;
-}
 .hint-row {
   display: flex;
   justify-content: center;
   gap: 12px;
+  margin-top: 12px;
 }
 </style>

@@ -5,8 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....db.engine import get_db
 from ....models import User
-from ....schemas import AIConfigIn, InviteCodeIn, InviteCodePatchIn
-from ....services import admin_service
+from ....schemas import DevDataSeedIn, InviteCodeIn, InviteCodePatchIn
+from ....services import admin_service, devdata_service
 from ..deps import require_admin
 
 router = APIRouter()
@@ -52,18 +52,20 @@ async def patch_invite_code(code_id: int, payload: InviteCodePatchIn, _: User = 
     return Response(status_code=204)
 
 
-@router.get("/admin/ai-config")
-async def get_ai_config(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    return await admin_service.get_ai_config(db)
+@router.get("/admin/devdata/summary")
+async def devdata_summary(user_id: int | None = None, admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    return await devdata_service.get_summary(db, user_id, admin)
 
 
-@router.put("/admin/ai-config")
-async def put_ai_config(payload: AIConfigIn, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    data = await admin_service.put_ai_config(db, payload)
+@router.post("/admin/devdata/seed")
+async def devdata_seed(payload: DevDataSeedIn, admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    data = await devdata_service.seed(db, admin, payload)
     await db.commit()
     return data
 
 
-@router.post("/admin/ai-config/test")
-async def test_ai_config(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    return await admin_service.test_ai_config(db)
+@router.post("/admin/devdata/clear")
+async def devdata_clear(payload: DevDataSeedIn, admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    data = await devdata_service.clear_all(db, admin, payload.target_user_id)
+    await db.commit()
+    return data

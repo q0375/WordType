@@ -168,18 +168,18 @@ function next() {
   margin-bottom: 20px;
 }
 .hint {
-  color: #9ca3af;
+  color: var(--wt-text-4);
   font-size: 13px;
 }
 .typing-box {
   margin: 16px auto;
   padding: 16px;
-  border: 2px solid #e5e7eb;
+  border: 2px solid var(--wt-border);
   border-radius: 8px;
   outline: none;
 }
 .typing-box:focus {
-  border-color: #2563eb;
+  border-color: var(--wt-primary);
 }
 .display {
   font-size: 22px;
@@ -187,7 +187,7 @@ function next() {
   letter-spacing: 2px;
 }
 .caret {
-  color: #2563eb;
+  color: var(--wt-primary);
   animation: blink 1s infinite;
 }
 @keyframes blink {

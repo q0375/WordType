@@ -2,11 +2,24 @@
 import { ref, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { getThemeMode, cycleThemeMode, type ThemeMode } from '../core/theme';
 
 const router = useRouter();
 const route = useRoute();
 const auth = useAuthStore();
 const mobileMenuOpen = ref(false);
+const themeMode = ref<ThemeMode>(getThemeMode());
+
+const themeIcon = computed(() =>
+  themeMode.value === 'light' ? 'Sunny' : themeMode.value === 'dark' ? 'Moon' : 'Monitor',
+);
+const themeLabel = computed(() =>
+  themeMode.value === 'light' ? '浅色模式' : themeMode.value === 'dark' ? '深色模式' : '跟随系统',
+);
+
+function toggleTheme() {
+  themeMode.value = cycleThemeMode();
+}
 
 interface NavItem {
   id: string;
@@ -50,7 +63,7 @@ function onLogout() {
   <header class="top-nav">
     <div class="nav-inner">
       <div class="brand" @click="go('/')">
-        <el-icon size="28" color="#2563EB"><Reading /></el-icon>
+        <el-icon size="28" color="var(--wt-primary)"><Reading /></el-icon>
         <span>WordType</span>
       </div>
 
@@ -68,6 +81,11 @@ function onLogout() {
       </nav>
 
       <div class="nav-actions">
+        <el-tooltip :content="`当前：${themeLabel}（点击切换）`" placement="bottom">
+          <el-button text circle class="theme-toggle" @click="toggleTheme">
+            <el-icon size="18"><component :is="themeIcon" /></el-icon>
+          </el-button>
+        </el-tooltip>
         <template v-if="auth.isLoggedIn">
           <span class="username">{{ auth.user?.username }}</span>
           <el-button type="danger" text @click="onLogout">退出</el-button>
@@ -98,9 +116,9 @@ function onLogout() {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--wt-nav-bg);
   backdrop-filter: blur(8px);
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--wt-border);
 }
 .nav-inner {
   max-width: 1200px;
@@ -117,7 +135,7 @@ function onLogout() {
   gap: 8px;
   font-size: 20px;
   font-weight: 700;
-  color: #111827;
+  color: var(--wt-text);
   cursor: pointer;
 }
 .desktop-nav {
@@ -132,15 +150,15 @@ function onLogout() {
 .nav-link {
   padding: 8px 12px;
   border-radius: 6px;
-  color: #4b5563;
+  color: var(--wt-text-2);
   text-decoration: none;
   font-size: 14px;
   transition: background 0.2s, color 0.2s;
 }
 .nav-link:hover,
 .nav-link.active {
-  background: #eff6ff;
-  color: #2563eb;
+  background: var(--wt-primary-bg);
+  color: var(--wt-primary);
 }
 .nav-actions {
   display: flex;
@@ -149,7 +167,7 @@ function onLogout() {
 }
 .username {
   font-size: 13px;
-  color: #374151;
+  color: var(--wt-text-2);
 }
 .menu-toggle {
   display: flex;
@@ -164,8 +182,8 @@ function onLogout() {
   top: 100%;
   left: 0;
   right: 0;
-  background: #fff;
-  border-bottom: 1px solid #e5e7eb;
+  background: var(--wt-card-bg);
+  border-bottom: 1px solid var(--wt-border);
   padding: 8px 16px;
   display: flex;
   flex-direction: column;
@@ -174,11 +192,11 @@ function onLogout() {
 .mobile-link {
   padding: 10px 12px;
   border-radius: 6px;
-  color: #374151;
+  color: var(--wt-text-2);
   text-decoration: none;
 }
 .mobile-link:hover {
-  background: #eff6ff;
+  background: var(--wt-primary-bg);
 }
 </style>
 
@@ -195,10 +213,10 @@ body.game-dark .top-nav:hover {
 }
 body.game-dark .top-nav .brand,
 body.game-dark .top-nav .username {
-  color: #e5e7eb;
+  color: var(--wt-border);
 }
 body.game-dark .top-nav .nav-link {
-  color: #9ca3af;
+  color: var(--wt-text-4);
 }
 body.game-dark .top-nav .nav-link:hover,
 body.game-dark .top-nav .nav-link.active {
@@ -210,7 +228,7 @@ body.game-dark .top-nav .mobile-menu {
   border-bottom-color: rgba(255, 255, 255, 0.1);
 }
 body.game-dark .top-nav .mobile-link {
-  color: #d1d5db;
+  color: var(--wt-border-strong);
 }
 body.game-dark .top-nav .mobile-link:hover {
   background: rgba(37, 99, 235, 0.25);

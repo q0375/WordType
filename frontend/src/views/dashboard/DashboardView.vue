@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import PageShell from '../../components/PageShell.vue';
 import { useRouter } from 'vue-router';
 import { statsApi, adviceApi } from '../../api';
@@ -11,21 +11,67 @@ const loading = ref(true);
 
 onMounted(async () => {
   try {
-    const [d, a] = await Promise.all([statsApi.dashboard(), adviceApi.get()]);
-    dash.value = d.data;
-    advice.value = a.data;
+    // 统计与建议解耦：统计先返回先渲染，建议卡骨架屏占位，避免白屏
+    const { data: d } = await statsApi.dashboard();
+    dash.value = d;
   } finally {
     loading.value = false;
   }
+  await loadAdvice(true);
+});
+
+const isPending = (a: any) => !!a?.note?.includes('生成中');
+
+let pollTimer: number | null = null;
+let pollTries = 0;
+
+async function loadAdvice(schedule: boolean) {
+  const { data } = await adviceApi.get();
+  advice.value = data;
+  if (schedule && isPending(data)) startPoll();
+}
+
+function startPoll() {
+  if (pollTimer) return; // 已在轮询
+  const tick = async () => {
+    pollTries += 1;
+    try {
+      const { data } = await adviceApi.get();
+      advice.value = data;
+    } catch {
+      /* 网络抖动忽略，继续等下一轮 */
+    }
+    if (advice.value && isPending(advice.value) && pollTries < 40) {
+      pollTimer = window.setTimeout(tick, 4000);
+    } else {
+      pollTimer = null;
+      pollTries = 0;
+    }
+  };
+  pollTimer = window.setTimeout(tick, 4000);
+}
+
+onBeforeUnmount(() => {
+  if (pollTimer) clearTimeout(pollTimer);
 });
 
 async function refreshAdvice() {
   const { data } = await adviceApi.refresh();
   advice.value = data;
+  if (isPending(data)) startPoll();
 }
 
 function actionType(type: string) {
   return type === 'high_error' ? 'danger' : type === 'danger_due' ? 'warning' : type === 'inactive' ? 'info' : 'success';
+}
+
+function actionRoute(item: any): string {
+  const t = item?.action?.type as string | undefined;
+  if (t === 'books') return '/books';
+  if (t === 'review') return '/review';
+  if (t === 'study_plan') return '/study';
+  if (t === 'high_error' || t === 'typing_drill') return '/practice';
+  return '/practice';
 }
 
 const maxForecast = ref(1);
@@ -39,19 +85,26 @@ const maxForecast = ref(1);
 
     <div v-if="dash" v-loading="loading">
       <!-- AI 建议 -->
-      <el-card class="advice-card" shadow="never" v-if="advice?.items?.length">
+      <el-card class="advice-card" shadow="never">
         <template #header>
           <div class="card-head">
-            <span>💡 今日建议（{{ advice.engine === 'rule' ? '规则引擎' : 'AI 模型' }}）</span>
-            <el-button text size="small" @click="refreshAdvice">换一批</el-button>
+            <span>💡 今日建议（{{ advice?.engine === 'llm' ? 'AI 模型' : advice ? '规则引擎' : '加载中…' }}）</span>
+            <div class="head-right">
+              <el-tag v-if="advice && isPending(advice)" type="primary" size="small">AI 生成中，稍候自动更新…</el-tag>
+              <el-tooltip v-else-if="advice?.note" :content="advice.note" placement="top">
+                <el-tag type="warning" size="small">AI 调用失败，已回退 ⓘ</el-tag>
+              </el-tooltip>
+              <el-button v-if="advice" text size="small" @click="refreshAdvice">换一批</el-button>
+            </div>
           </div>
         </template>
-        <div class="advice-list">
+        <div v-if="advice?.items?.length" class="advice-list">
           <div v-for="item in advice.items" :key="item.type" class="advice-item">
             <el-tag :type="actionType(item.type)" size="small">{{ item.message }}</el-tag>
-            <el-button size="small" text type="primary" @click="router.push('/practice')">去执行</el-button>
+            <el-button size="small" text type="primary" @click="router.push(actionRoute(item))">去执行</el-button>
           </div>
         </div>
+        <el-skeleton v-else :rows="3" animated />
       </el-card>
 
       <!-- 统计卡片 -->
@@ -128,6 +181,11 @@ const maxForecast = ref(1);
   justify-content: space-between;
   align-items: center;
 }
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .advice-list {
   display: flex;
   flex-direction: column;
@@ -148,11 +206,11 @@ const maxForecast = ref(1);
 .stat-num {
   font-size: 32px;
   font-weight: 700;
-  color: #2563eb;
+  color: var(--wt-primary);
 }
 .stat-label {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--wt-text-3);
   margin-top: 4px;
 }
 .two-col {
@@ -175,14 +233,14 @@ const maxForecast = ref(1);
   width: 12px;
   height: 12px;
   border-radius: 2px;
-  background: #10b981;
+  background: var(--wt-success);
 }
 .dist-row {
   display: flex;
   flex-direction: column;
   gap: 12px;
   font-size: 14px;
-  color: #374151;
+  color: var(--wt-text-2);
 }
 .dist-item b {
   margin-left: 4px;
@@ -195,13 +253,13 @@ const maxForecast = ref(1);
   margin-right: 8px;
 }
 .dot.mastered {
-  background: #10b981;
+  background: var(--wt-success);
 }
 .dot.consolidating {
-  background: #f59e0b;
+  background: var(--wt-warning);
 }
 .dot.danger {
-  background: #ef4444;
+  background: var(--wt-danger);
 }
 .forecast {
   display: flex;
@@ -217,16 +275,16 @@ const maxForecast = ref(1);
 }
 .forecast-item .bar {
   width: 28px;
-  background: #2563eb;
+  background: var(--wt-primary);
   border-radius: 4px 4px 0 0;
 }
 .forecast-item .cnt {
   font-size: 12px;
-  color: #111827;
+  color: var(--wt-text);
   font-weight: 600;
 }
 .forecast-item .d {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--wt-text-4);
 }
 </style>

@@ -50,9 +50,15 @@ async function pickBook(id: number) {
   bookId.value = id;
   const { data } = await booksApi.chapters(id);
   chapters.value = data.items;
+  // 默认全选章节，用户可自行取消勾选
+  selectedChapters.value = data.items.map((c: any) => c.id);
 }
 
 async function start() {
+  if (!bookId.value) {
+    ElMessage.warning('请先选择词库');
+    return;
+  }
   if (!selectedChapters.value.length) {
     ElMessage.warning('请至少选择一个章节');
     return;
@@ -199,7 +205,7 @@ function endGroup() {
           </el-select>
         </el-form-item>
         <el-form-item label="章节">
-          <el-select v-model="selectedChapters" multiple collapse-tags placeholder="多选章节（默认全选）" style="width: 320px">
+          <el-select v-model="selectedChapters" multiple collapse-tags placeholder="多选章节（已默认全选）" style="width: 320px" :disabled="!bookId">
             <el-option v-for="c in chapters" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
         </el-form-item>
@@ -211,7 +217,8 @@ function endGroup() {
         <el-form-item label="组规格">
           <span>{{ settings.settings?.practice_group_size ?? 20 }} 题（可在设置页调整 10–50）</span>
         </el-form-item>
-        <el-button type="primary" size="large" @click="start">开始练习</el-button>
+        <el-button type="primary" size="large" :disabled="!bookId" @click="start">开始练习</el-button>
+        <span v-if="!bookId" class="start-hint">先选择词库，章节将默认全选</span>
       </el-form>
     </el-card>
 
@@ -308,24 +315,24 @@ function endGroup() {
 }
 .prompt {
   font-size: 20px;
-  color: #111827;
+  color: var(--wt-text);
   text-align: center;
   margin: 24px 0;
 }
 .prompt.cloze {
   font-family: Georgia, serif;
   font-style: italic;
-  color: #374151;
+  color: var(--wt-text-2);
 }
 .typing-box {
   margin: 12px auto;
   padding: 16px;
-  border: 2px solid #e5e7eb;
+  border: 2px solid var(--wt-border);
   border-radius: 8px;
   outline: none;
 }
 .typing-box:focus {
-  border-color: #2563eb;
+  border-color: var(--wt-primary);
 }
 .display {
   font-size: 22px;
@@ -333,7 +340,7 @@ function endGroup() {
   letter-spacing: 2px;
 }
 .caret {
-  color: #2563eb;
+  color: var(--wt-primary);
   animation: blink 1s infinite;
 }
 @keyframes blink {
@@ -353,7 +360,7 @@ function endGroup() {
 }
 .option-btn .key {
   margin-right: 8px;
-  color: #2563eb;
+  color: var(--wt-primary);
 }
 .fb {
   text-align: center;
@@ -362,16 +369,21 @@ function endGroup() {
   margin: 16px 0;
 }
 .fb.correct {
-  color: #10b981;
+  color: var(--wt-success);
 }
 .fb.near {
-  color: #f59e0b;
+  color: var(--wt-warning);
 }
 .fb.wrong {
-  color: #ef4444;
+  color: var(--wt-danger);
 }
 .foot-row {
   display: flex;
   justify-content: center;
+}
+.start-hint {
+  margin-left: 12px;
+  font-size: 13px;
+  color: var(--wt-text-4);
 }
 </style>

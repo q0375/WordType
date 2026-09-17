@@ -18,6 +18,8 @@ export interface AppSettings {
   exam_pass_score: number;
   exam_loose_match: number;
   review_wrong_reshow: number;
+  review_show_meaning: number;
+  advice_engine: 'rule' | 'llm';
   server_date?: string;
   server_tz?: string;
 }

@@ -183,7 +183,7 @@ function speak() {
 </script>
 
 <template>
-  <PageShell title="学习模式" subtitle="卡片自评 + 默写（D8/D17）">
+  <PageShell title="学习模式" subtitle="卡片自评 + 默写">
     <div class="scope-bar">
       <el-select v-model="bookId" placeholder="选择词库" style="width: 220px" @change="pickBook">
         <el-option v-for="b in books" :key="b.id" :label="b.name" :value="b.id" />
@@ -267,7 +267,7 @@ function speak() {
 }
 .quota {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--wt-text-3);
 }
 .word-card {
   max-width: 640px;
@@ -287,27 +287,27 @@ function speak() {
 .spelling {
   font-size: 36px;
   margin: 8px 0;
-  color: #111827;
+  color: var(--wt-text);
 }
 .dictation .spelling {
   font-size: 44px;
-  color: #2563eb;
+  color: var(--wt-primary);
 }
 .phonetic {
-  color: #6b7280;
+  color: var(--wt-text-3);
   margin: 4px 0;
 }
 .meaning {
   font-size: 18px;
-  color: #111827;
+  color: var(--wt-text);
   margin: 12px 0;
 }
 .example {
-  color: #6b7280;
+  color: var(--wt-text-3);
   font-style: italic;
 }
 .hint {
-  color: #9ca3af;
+  color: var(--wt-text-4);
   font-size: 13px;
 }
 .rate-row {
@@ -319,14 +319,14 @@ function speak() {
 .typing-box {
   margin: 16px auto;
   padding: 16px;
-  border: 2px solid #e5e7eb;
+  border: 2px solid var(--wt-border);
   border-radius: 8px;
   min-height: 64px;
   outline: none;
   cursor: text;
 }
 .typing-box:focus {
-  border-color: #2563eb;
+  border-color: var(--wt-primary);
 }
 .char {
   display: inline-block;
@@ -334,16 +334,16 @@ function speak() {
   height: 32px;
   line-height: 32px;
   margin: 0 2px;
-  border-bottom: 2px solid #d1d5db;
+  border-bottom: 2px solid var(--wt-border-strong);
   font-size: 20px;
   font-family: Consolas, monospace;
 }
 .char.ok {
-  color: #111827;
-  border-color: #10b981;
+  color: var(--wt-text);
+  border-color: var(--wt-success);
 }
 .char.bad {
-  color: #ef4444;
-  border-color: #ef4444;
+  color: var(--wt-danger);
+  border-color: var(--wt-danger);
 }
 </style>

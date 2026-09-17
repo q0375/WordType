@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import PageShell from '../../components/PageShell.vue';
 import { booksApi } from '../../api';
 import { useAuthStore } from '../../stores/auth';
+
+const router = useRouter();
 
 const auth = useAuthStore();
 const tab = ref<'all' | 'mine' | 'public'>('all');
@@ -70,8 +73,12 @@ async function removeBook(b: any) {
 
 async function cloneBook(b: any) {
   const { data } = await booksApi.clone(b.id);
-  ElMessage.success(`已克隆为副本（id ${data.book_id}）`);
   load();
+  await ElMessageBox.confirm(
+    `已在「我的词库」创建副本「${b.name}-副本」，现在就去学几个词？`,
+    '克隆成功',
+    { confirmButtonText: '去学习', cancelButtonText: '留在这里', type: 'success' },
+  ).then(() => router.push('/study')).catch(() => {});
 }
 
 function canManage(b: any) {
@@ -403,7 +410,7 @@ async function confirmImport() {
   font-size: 16px;
 }
 .meta {
-  color: #6b7280;
+  color: var(--wt-text-3);
   font-size: 13px;
   margin: 8px 0 12px;
 }

@@ -144,6 +144,12 @@ export const exportApi = {
   accountUrl: '/api/v1/export/account',
 };
 
+export const aiConfigApi = {
+  get: () => http.get('/ai-config'),
+  put: (patch: Record<string, unknown>) => http.put('/ai-config', patch),
+  test: () => http.post('/ai-config/test'),
+};
+
 export const adminApi = {
   users: (params: { q?: string; status?: string; page?: number }) => http.get('/admin/users', { params }),
   resetPassword: (id: number) => http.post(`/admin/users/${id}/reset-password`),
@@ -151,7 +157,7 @@ export const adminApi = {
   inviteCodes: (params: { status?: string; page?: number }) => http.get('/admin/invite-codes', { params }),
   createInviteCodes: (count: number, valid_days: number) => http.post('/admin/invite-codes', { count, valid_days }),
   patchInviteCode: (id: number, is_active: number) => http.patch(`/admin/invite-codes/${id}`, { is_active }),
-  aiConfig: () => http.get('/admin/ai-config'),
-  putAiConfig: (patch: Record<string, unknown>) => http.put('/admin/ai-config', patch),
-  testAiConfig: () => http.post('/admin/ai-config/test'),
+  devdataSummary: (userId?: number) => http.get('/admin/devdata/summary', { params: userId ? { user_id: userId } : {} }),
+  devdataSeed: (patch: Record<string, unknown>) => http.post('/admin/devdata/seed', patch),
+  devdataClear: (userId?: number) => http.post('/admin/devdata/clear', userId ? { target_user_id: userId } : {}),
 };

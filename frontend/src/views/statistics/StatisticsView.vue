@@ -63,7 +63,7 @@ function trendPath(): string {
           </div>
         </template>
         <svg viewBox="0 0 640 170" class="trend-svg">
-          <path :d="trendPath()" fill="none" stroke="#2563eb" stroke-width="2" />
+          <path :d="trendPath()" fill="none" class="trend-line" stroke-width="2" />
         </svg>
         <p v-if="trend.length < 2" class="empty-hint">数据点不足，多练习几天后可看趋势</p>
       </el-card>
@@ -107,8 +107,11 @@ function trendPath(): string {
   width: 100%;
   height: 180px;
 }
+.trend-line {
+  stroke: var(--wt-primary);
+}
 .empty-hint {
-  color: #9ca3af;
+  color: var(--wt-text-4);
   font-size: 13px;
   text-align: center;
 }
@@ -128,7 +131,7 @@ function trendPath(): string {
   flex-direction: column;
   gap: 12px;
   font-size: 14px;
-  color: #374151;
+  color: var(--wt-text-2);
 }
 .dot {
   display: inline-block;
@@ -138,13 +141,13 @@ function trendPath(): string {
   margin-right: 8px;
 }
 .dot.mastered {
-  background: #10b981;
+  background: var(--wt-success);
 }
 .dot.consolidating {
-  background: #f59e0b;
+  background: var(--wt-warning);
 }
 .dot.danger {
-  background: #ef4444;
+  background: var(--wt-danger);
 }
 .forecast {
   display: flex;
@@ -160,11 +163,11 @@ function trendPath(): string {
 }
 .forecast-item .bar {
   width: 24px;
-  background: #2563eb;
+  background: var(--wt-primary);
   border-radius: 4px 4px 0 0;
 }
 .forecast-item .d {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--wt-text-4);
 }
 </style>

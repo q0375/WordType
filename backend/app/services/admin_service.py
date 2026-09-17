@@ -9,12 +9,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.errors import AppError
-from ..core.security import encrypt_secret, hash_password, mask_secret
+from ..core.security import hash_password
 from ..db.engine import now_str
-from ..models import InviteCode, SystemSetting, User
-
-AI_CONFIG_KEY = "ai_model_config"
-
+from ..models import InviteCode, User
 
 def _gen_code(n: int = 12) -> str:
     alphabet = string.ascii_uppercase + string.digits
@@ -113,67 +110,3 @@ async def patch_invite_code(db: AsyncSession, code_id: int, is_active: int) -> N
     if c is None:
         raise AppError("NOT_FOUND", "邀请码不存在")
     c.is_active = is_active
-
-
-async def get_ai_config(db: AsyncSession) -> dict:
-    row = (await db.execute(select(SystemSetting).where(SystemSetting.key == AI_CONFIG_KEY))).scalar_one_or_none()
-    base = {"engine": "rule", "api_base_url": "", "api_key_masked": "", "model_name": "", "temperature": 0.7, "timeout_s": 30, "enabled": False}
-    if row is None:
-        return base
-    cfg = json.loads(row.value_json)
-    base.update({
-        "engine": cfg.get("engine", "rule"),
-        "api_base_url": cfg.get("api_base_url", ""),
-        "api_key_masked": mask_secret(cfg.get("api_key_enc", "")),
-        "model_name": cfg.get("model_name", ""),
-        "temperature": cfg.get("temperature", 0.7),
-        "timeout_s": cfg.get("timeout_s", 30),
-        "enabled": cfg.get("enabled", False),
-    })
-    return base
-
-
-async def put_ai_config(db: AsyncSession, payload) -> dict:
-    row = (await db.execute(select(SystemSetting).where(SystemSetting.key == AI_CONFIG_KEY))).scalar_one_or_none()
-    cfg = json.loads(row.value_json) if row else {}
-    data = payload.model_dump(exclude_unset=True)
-    for k in ("engine", "api_base_url", "model_name", "temperature", "timeout_s", "enabled"):
-        if data.get(k) is not None:
-            cfg[k] = data[k]
-    if data.get("api_key"):
-        cfg["api_key_enc"] = encrypt_secret(data["api_key"])  # AES-GCM 加密，永不回显明文
-    if row is None:
-        row = SystemSetting(key=AI_CONFIG_KEY, value_json=json.dumps(cfg), updated_at=now_str())
-        db.add(row)
-    else:
-        row.value_json = json.dumps(cfg)
-        row.updated_at = now_str()
-    await db.flush()
-    return await get_ai_config(db)
-
-
-async def test_ai_config(db: AsyncSession) -> dict:
-    """1-token 探测；失败也 200（ok:false 带原因）。"""
-    import time
-
-    import httpx
-
-    row = (await db.execute(select(SystemSetting).where(SystemSetting.key == AI_CONFIG_KEY))).scalar_one_or_none()
-    cfg = json.loads(row.value_json) if row else {}
-    if not cfg.get("enabled") or not cfg.get("api_base_url"):
-        return {"ok": False, "latency_ms": 0, "message": "未启用或未配置基地址"}
-    from ..core.security import decrypt_secret
-
-    try:
-        key = decrypt_secret(cfg["api_key_enc"])
-        start = time.monotonic()
-        async with httpx.AsyncClient(timeout=cfg.get("timeout_s", 30)) as client:
-            resp = await client.post(
-                cfg["api_base_url"].rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {key}"},
-                json={"model": cfg.get("model_name", ""), "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1},
-            )
-        latency = int((time.monotonic() - start) * 1000)
-        return {"ok": resp.status_code == 200, "latency_ms": latency, "message": f"HTTP {resp.status_code}"}
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "latency_ms": 0, "message": str(e)[:200]}

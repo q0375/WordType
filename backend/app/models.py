@@ -67,10 +67,12 @@ class DailySetting(Base):
     game_difficulty: Mapped[str] = mapped_column(Text, nullable=False, default="normal")
     game_limited_mode: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     game_key_sound: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    advice_engine: Mapped[str] = mapped_column(Text, nullable=False, default="rule")  # rule=规则引擎 / llm=AI 模型（用户自选）
     exam_time_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     exam_pass_score: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     exam_loose_match: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     review_wrong_reshow: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    review_show_meaning: Mapped[int] = mapped_column(Integer, nullable=False, default=1)  # 复习时是否显示释义提示
 
 
 class SystemSetting(Base):
@@ -281,8 +283,22 @@ class AdviceCache(Base):
     date: Mapped[str] = mapped_column(Text, primary_key=True)
     items_json: Mapped[str] = mapped_column(Text, nullable=False)
     engine: Mapped[str] = mapped_column(Text, nullable=False, default="rule")
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")  # engine=rule 且选了 AI 时记录回退原因
     refresh_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     generated_at: Mapped[str] = mapped_column(Text, nullable=False, default=now_str)
+
+
+class UserAiConfig(Base):
+    """每用户自有 LLM 凭据（AES-GCM 加密存储 Key，仅本人可读写）。"""
+
+    __tablename__ = "user_ai_config"
+    user_id: Mapped[int] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), primary_key=True)
+    api_base_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    api_key_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    model_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    temperature: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
+    timeout_s: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    updated_at: Mapped[str | None] = mapped_column(Text)
 
 
 class GameSession(Base):

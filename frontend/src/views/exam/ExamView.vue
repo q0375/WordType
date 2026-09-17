@@ -190,10 +190,10 @@ function showRecords() {
         </el-form-item>
         <el-form-item label="题型 × 题量">
           <div class="tc-row">
-            <el-input-number v-model="cfg.dictation" :min="0" :max="30" /> 默写
-            <el-input-number v-model="cfg.choice" :min="0" :max="30" /> 选择
-            <el-input-number v-model="cfg.cloze" :min="0" :max="30" /> 挖空
-            <el-input-number v-model="cfg.listening" :min="0" :max="30" /> 听音
+            <span class="tc-item"><el-input-number v-model="cfg.dictation" :min="0" :max="30" /> 默写</span>
+            <span class="tc-item"><el-input-number v-model="cfg.choice" :min="0" :max="30" /> 选择</span>
+            <span class="tc-item"><el-input-number v-model="cfg.cloze" :min="0" :max="30" /> 挖空</span>
+            <span class="tc-item"><el-input-number v-model="cfg.listening" :min="0" :max="30" /> 听音</span>
           </div>
         </el-form-item>
         <el-form-item label="限时（分钟）">
@@ -308,15 +308,21 @@ function showRecords() {
 .tc-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 10px 18px;
   flex-wrap: wrap;
+}
+.tc-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
 }
 .tc-row .el-input-number {
   width: 110px;
 }
 .hint {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--wt-text-4);
   margin-left: 8px;
 }
 .paper-head {
@@ -330,7 +336,7 @@ function showRecords() {
 }
 .q-title {
   font-size: 15px;
-  color: #111827;
+  color: var(--wt-text);
   margin: 0 0 8px;
 }
 .options {

@@ -45,7 +45,7 @@ async function submit() {
   <div class="auth-wrap">
     <el-card class="auth-card" shadow="never">
       <div class="brand-row">
-        <el-icon size="32" color="#2563EB"><Reading /></el-icon>
+        <el-icon size="32" color="var(--wt-primary)"><Reading /></el-icon>
         <h1>注册账号</h1>
       </div>
       <el-form label-position="top" @submit.prevent="submit">
@@ -58,7 +58,7 @@ async function submit() {
         <el-form-item label="确认密码">
           <el-input v-model="form.confirm" type="password" show-password placeholder="再次输入密码" />
         </el-form-item>
-        <el-form-item label="邀请码（公网部署且开启邀请制时必填）">
+        <el-form-item label="邀请码">
           <el-input v-model="form.invite_code" placeholder="选填" />
         </el-form-item>
         <el-button type="primary" class="submit-btn" :loading="loading" native-type="submit">注册</el-button>
@@ -76,7 +76,7 @@ async function submit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f8fafc;
+  background: var(--wt-bg);
   padding: 16px;
 }
 .auth-card {
@@ -90,7 +90,7 @@ async function submit() {
 .brand-row h1 {
   margin: 8px 0 0;
   font-size: 22px;
-  color: #111827;
+  color: var(--wt-text);
 }
 .submit-btn {
   width: 100%;

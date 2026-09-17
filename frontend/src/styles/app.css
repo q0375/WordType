@@ -2,10 +2,49 @@
   box-sizing: border-box;
 }
 
+/* ========== 主题变量（浅色默认 / html.dark 深色） ========== */
+:root {
+  --wt-bg: #f8fafc;            /* 页面背景 */
+  --wt-card-bg: #ffffff;       /* 卡片/面板背景 */
+  --wt-border: #e5e7eb;        /* 常规边框 */
+  --wt-border-strong: #d1d5db; /* 加重边框 */
+  --wt-text: #111827;          /* 主文字 */
+  --wt-text-2: #374151;        /* 次级文字 */
+  --wt-text-3: #6b7280;        /* 弱化文字 */
+  --wt-text-4: #9ca3af;        /* 最弱文字/占位 */
+  --wt-primary: #2563eb;       /* 主色 */
+  --wt-primary-bg: #eff6ff;    /* 主色浅底（选中/hover） */
+  --wt-hover-bg: #f3f4f6;      /* 通用 hover 底色 */
+  --wt-success: #10b981;
+  --wt-warning: #f59e0b;
+  --wt-danger: #ef4444;
+}
+
+html.dark {
+  --wt-bg: #12141a;
+  --wt-card-bg: #1a1d26;
+  --wt-border: #2b2f3a;
+  --wt-border-strong: #3a3f4d;
+  --wt-text: #e5e7eb;
+  --wt-text-2: #cbd5e1;
+  --wt-text-3: #9ca3af;
+  --wt-text-4: #6b7280;
+  --wt-primary: #60a5fa;
+  --wt-primary-bg: rgba(37, 99, 235, 0.22);
+  --wt-hover-bg: rgba(255, 255, 255, 0.06);
+  --wt-success: #34d399;
+  --wt-warning: #fbbf24;
+  --wt-danger: #f87171;
+  --wt-nav-bg: rgba(18, 20, 26, 0.92);
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: var(--wt-bg);
+  color: var(--wt-text);
+  transition: background 0.25s ease, color 0.25s ease;
 }
 
 button,
