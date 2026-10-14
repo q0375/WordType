@@ -70,7 +70,7 @@
     70	| D24 | LetterStat 粒度 〔v3.1〕 | letter 字段支持 1–2 字符：单字母与相邻双字母各自成行独立聚合；AI 建议的「字母组合 Top5」取 bigram 行 |
     71	| D25 | 邀请码 〔v3.1〕 | 新表 InviteCode（一次性使用）；admin 可批量生成 / 列表 / 停用；仅公网部署且开关开启时注册必填 invite_code |
     72	| D26 | 设置 API 〔v3.1〕 | GET /api/settings 返回含缺省值的完整配置；PUT /api/settings 部分更新 + 字段范围校验（daily_new_limit 0–100、dictation_show_seconds 2–5 等） |
-    73	| D27 | 游戏开局协议 〔v3.1〕 | 新增 POST /api/game/start：请求携带章节勾选+难度+模式，服务端执行词池抽取（高危 30% 优先，前端不可信）并生成 session（暂存 30 分钟）；/api/game/submit 携带 session_id，服务端校验 word_id∈池、session 未结算；中断无结算 → 不入库、不入错题本 |
+    73	| D27 | 游戏开局协议 〔v3.1〕 | 新增 POST /api/game/start：请求携带章节勾选+难度+模式，服务端把所选范围全部词洗牌成词池整体下发（前端不可信）并生成 session（暂存 30 分钟）；/api/game/submit 携带 session_id，服务端校验 word_id∈池、session 未结算；中断无结算 → 不入库、不入错题本 |
     74	| D28 | AI 自定义模型接入 〔v3.1，v3.3 部分由 D29 取代〕 | P4 LLM 版支持 OpenAI 兼容协议（/chat/completions）自定义接入。配置项：api_base_url / api_key（AES-GCM 加密存储，密钥走环境变量）/ model_name / temperature / timeout（默认 30s）。~~admin 级全局配置~~ → 〔v3.3〕凭据与引擎选择均归用户自有（见 D29）；调用失败自动重试 1 次后回落规则引擎；手动刷新限 3 次/人/日；出域数据最小化（仅统计聚合与单词拼写，不含 user_id/username），开启时展示目标端点域名 |
     75	| D29 | AI 凭据每用户自有 〔v3.3〕 | 新表 UserAiConfig（user_id 主键，api_base_url / api_key_enc / model_name / temperature / timeout_s），仅本人可读写；端点 GET/PUT /api/ai-config（key 回显脱敏 ****尾 4 位）+ POST /api/ai-config/test 连通性测试；admin 全局 AI 配置端点删除。引擎选择下沉为 DailySetting.advice_engine（rule/llm，默认 rule），用户在设置页自选；凭据变更或引擎切换时当日建议缓存立即失效 |
     76	| D30 | AI 建议异步生成 〔v3.3〕 | get_advice 首次生成（当日无缓存）时**立即返回**规则引擎建议占位（note=「AI 建议生成中」），后台任务调用 LLM 完成后覆盖当日 AdviceCache（保留 refresh_count；失败将原因写入 note）；前端检测「生成中」每 4s 轮询（上限 40 次），完成后自动替换展示。目的：LLM 推理耗时（30–60s+）不得阻塞页面渲染 |
@@ -153,320 +153,327 @@
    153	| 四选一选择题 | 干扰项：同章节随机取 3 个不同释义的词；同章节不足时从同词库补；干扰项与正确项释义重复时重新抽取〔v3.1〕 |
    154	| 听音拼写 | 播放发音，无文字提示；TTS 不可用时该题型自动跳过 |
    155	| 例句挖空填词 | 仅例句非空且包含 spelling（忽略大小写、全词匹配）的词可选入；词形变体 v1 不处理（写明局限）〔v3.1，口径 18〕 |
-   156	出题算法：
-   157	- 勾选题型均匀轮询出题，某题型可用池为空时自动跳过并按比例补偿
-   158	- 答错的词在本组练习内以 50% 概率重现，插入本组题队尾部（D23）〔v3.1〕
-   159	- 组规格（D23〔v3.1〕）：每组默认 20 题（可配 10–50）+ 手动结束（已答部分正常计分）；同词组内除重现一次外不重复
-   160	判定规则（全局约定，用户可设置严格/宽松）：
-   161	1. 去除首尾空格，统一小写比较
-   162	2. 严格模式：完全匹配才算对
-   163	3. 宽松模式（默认开）：Levenshtein ≤1 判「近似错误」→ 按答错计熟练度惩罚（p−12），但不重置复习间隔、不重现；streak 不清零不增长（D21）〔v3.1〕
-   164	打字专项：
-   165	- 指法引导：虚拟键盘高亮下一字母 + 手指分区颜色（可关闭）
-   166	- 实时统计：本组 WPM、准确率、逐字母延迟热力图（公式见第二章/附录 C）
-   167	- 中断保护（D12）：进度每 30 秒写 localStorage，重新进入本机可恢复；不做服务端续练
-   168	- 断网重放（D19〔v3.1〕）：单题提交失败进 pending 队列（localStorage，同 {userId}: 前缀），恢复网络自动重放；请求携带 request_id（uuid），服务端 24h 幂等去重。考核除外（中断即作废）
-   169	结果页：逐词对错列表，错词一键加入错题本。
-   170	单题实时提交（D9），前端逐题上报 TypingRecord（含 source=practice、detail_json 逐字母时间戳，供 LetterStat 聚合〔v3.1〕）。
-   171	### 模块 5：考核模式
-   172	| 功能 | 规格定义 |
-   173	|------|---------|
-   174	| 组卷配置 | 题型 × 题量、限时（默认 20 分钟）、及格线（默认 60）、判定模式（默认严格）；宽松模式下近似错误按 0.5 分计（D20）〔v3.1〕 |
-   175	| 计分公式 〔v3.1 D20〕 | 每题 1 分：score = round(得分 ÷ 题量 × 100)；计分口径写入 config_json.scoring_rule 快照 |
-   176	| 出题池 〔v3.1 D22〕 | 已学优先：先取该章节已入 UserWordStat 的词，不足题量从该章节未删除词随机补齐；策略快照 config_json.pool_source |
-   177	| 规则 | 不可回看修改；时间到自动交卷；禁用粘贴（paste 事件阻止）；页面失焦计数写入成绩单 |
-   178	| 中断处理 | 交卷前关闭页面/断网 → 该卷作废，不计成绩、不占历史，答题数据不保存。刷新/关闭页面 = 作废（beforeunload 拦截提示）；「时间到自动交卷」请求失败 → 携幂等键重试 3 次，仍失败 = 作废〔v3.1，口径 22〕 |
-   179	| 交卷 | 批量提交（D9）+ Idempotency-Key（24h 幂等，重复提交返回首次结果） |
-   180	| 成绩单 | 总分、正确率、平均每题用时、逐题明细、失焦次数、错词一键加入错题本；ExamRecord 存储组卷配置快照（题型分布/限时/及格线/判定模式/计分口径/出题池策略），保证默认值变更后历史成绩可解释 |
-   181	| 历史成绩 | 列表 + 趋势折线图 |
-   182	### 模块 6：错题本
-   183	| 功能 | 规格定义 |
-   184	|------|---------|
-   185	| 归集来源 | 练习 / 考核 / 复习 / 游戏 / **学习默写答错**（D17）〔v3.1〕自动进入 |
-   186	| 攻克规则（D10） | conquer_count 独立计数，入本时归零；任意模式答对 +1，连续答对 3 次自动移出（resolved=1，历史保留可查）；答错归零重计。**计数行为〔v3.1 口径 14〕**：判定答对（练习/复习/考核/游戏销毁/学习默写正确）+1；自评（学习/复习）不计数 |
-   187	| 重新入本 〔v3.1 口径 15〕 | resolved=1 的词再次答错 → resolved=0、conquer_count=0、added_at=now、source 取最近来源（同词同用户仅一行 upsert） |
-   188	| 手动操作 | 移入 / 移出 / 置顶 |
-   189	| 独立入口 | 「错题本专项练习」 |
-   190	### 模块 7：数据指标与仪表盘
-   191	熟练度算法（定稿）：
-   192	- 初始值 0；自评设值：认识=60，模糊=30，不认识=0（D8，仅学习模式）；设值后 streak=0（D21）〔v3.1〕
-   193	- 答对：proficiency = MIN(100, proficiency + 10 × MIN(streak_correct, 3))；streak+1〔v3.1〕
-   194	- 答错：proficiency = MAX(0, proficiency − 25)；streak 清零〔v3.1〕
-   195	- 近似错误：proficiency = MAX(0, proficiency − 12)；streak 不清零不增长〔v3.1〕
-   196	- 状态：≥80 已掌握（next_review_at 置 NULL，退出复习循环）；40–79 巩固中；<40 高危遗忘
-   197	- **已掌握回退（D18〔v3.1〕）**：已掌握词在任意模式答错致 p<80 → 状态回「巩固中」，interval 重置 1 天、next_review_at=+1d、ease 沿用（下限 1.3），重新入复习队列（已同步附录 A）
-   198	- 「N 天后低频重检」为 P4 可选，默认关
-   199	打卡定义：当日任一模式完成 ≥1 次有效提交（自评/答题/交卷/游戏结算）即打卡。**数据写入〔v3.1 口径 21〕**：提交时实时 upsert DailyActivity（当日打卡/热力图即时可见），04:00 任务仅做对账校准。
-   200	记录维度：熟练度、总次数、对/错/近似次数、错误率、连对、最近对错时间、WPM、准确率。
-   201	仪表盘：今日待复习数、今日新学数、连续天数、打卡热力图（DailyActivity 预聚合）、熟练度分布饼图、WPM/准确率趋势（TypingRecord.source 支持按模式区分〔v3.1〕）、未来 7 天复习量条形图。
-   202	### 模块 8：复习循环（SM-2）
-   203	- ease 初始 2.5，下限 1.3；间隔序列 1天 → 3天 → 之后 = 上次间隔 × ease
-   204	- 答对：间隔推进，ease +0.05（上限 3.0）
-   205	- 答错：间隔重置 1 天，ease −0.2；该词当日队列重现一次（D11，可关）
-   206	- 近似错误：间隔减半（不低于 1 天），ease −0.1；不当日重现
-   207	**复习形式与自评映射（D16〔v3.1〕）**：复习形式可配置——打字默写（默认）/ 选择 / 自评。形式=自评时：
-   208	| 复习自评 | 映射处理 |
-   209	|---------|---------|
-   210	| 认识 | 按答对处理：间隔推进、ease+0.05、streak+1、p+10×MIN(streak,3) |
-   211	| 模糊 | 按近似错误处理：间隔减半（≥1天）、ease−0.1、p−12、streak 不变、不当日重现 |
-   212	| 不认识 | 按答错处理：间隔重置 1 天、ease−0.2、p−25、streak 清零、受 D11 开关控制当日重现 |
-   213	**释义显示（D34〔v3.5〕）**：复习作答是否展示释义提示由用户设置 `review_show_meaning`（默认开）控制：开启时打字默写显示中文释义与音标（看义默写）；关闭时不显示释义、仅听发音默写。选择形式（释义为作答目标）与自评形式（展示拼写、回忆释义）不显示释义提示；答题反馈区始终展示正确答案（拼写+音标+释义）。
-   214	流量：每日新词上限 20（可设 0–100）、复习上限 100（可设）；溢出顺延次日，按逾期天数降序补。
-   215	出题顺序：逾期词 → 高危遗忘 → 巩固中。
-   216	单词生命周期状态机：见附录 A（v3.1 已更新 D17/D18 路径）。
-   217	### 模块 9：游戏模式（下坠打字）
-   218	核心规则（D1，交互协议详见附录 B）：
-   219	- 单词从顶部下落，逐字母实时匹配：输入即锁定目标词；被锁定的词冻结下落，其余词继续
-   220	- 锁定优先级：已敲字母的词 > 未敲词；同级取离底部最近
-   221	- 敲对字母前进；敲错字母闪红但仍计入输入串，可退格（退格不扣血、不断 Combo，计入准确率）
-   222	- 输入串长度 = 词长时自动判定（无提交键）：完全正确（或宽松规则内）→ 销毁得分；否则 → 扣血 + 该词弹回顶部重新下落
-   223	- 落地未打完 → 扣血（默认 5）；落地与敲错提交均断 Combo；退格不断
-   224	计分（口径 19〔v3.1〕）：
-   225	- 打对加分 = (10 + 词长 × 2 + 高度加成) × Combo 倍率
-   226	- 高度加成 = round(10 × 剩余高度 ÷ 初始高度)，销毁时刻计算
-   227	- Combo 阶梯：连对 5 词→×1.5、10 词→×2.0、15 词→×2.5、20 词→×3.0（上限）；「无错」指无落地、无弹回
-   228	**开局协议（D27〔v3.1〕）**：POST /api/game/start 携带章节勾选+难度+模式；服务端执行词池抽取（高危遗忘词优先 30%，池内不足时取全部高危 + 随机补齐；前端不可信）并生成 session（30 分钟有效）；submit 携带 session_id，校验 word_id∈池、session 未结算。**中断（关页面无结算）→ 不入库、不入错题本**〔v3.1〕。
-   229	其他：
-   230	- **沉浸式对局 UI（D31〔v3.3〕）**：点「开始游戏」后整页切换深色渐变沉浸模式（顶部导航上收，鼠标悬停浮现），配置/结算页保持常规浅色；游戏区 85% 宽度居中；一体化悬浮状态栏：生命值（掉血红闪）+ 大号分数 + 金色连击徽章（连击跳动）+ 倒计时 + 暂停圆形按钮（带剩余次数角标）；暂停时画面模糊 + 居中面板（继续游戏/重新开始/退出游戏，退出=立即结算）；底部输入条仅锁定单词后出现，目标词逐字符高亮（正确黄/错误红/未输入灰），输入正确闪绿光、错误闪红光+轻震
-   231	- **按键音效（D31〔v3.3〕）**：WebAudio 合成（正确 880Hz / 错误 200Hz），设置页开关 `game_key_sound`（默认开）
-   232	- **开局校验（D31〔v3.3〕）**：必须先选择词库才能开始（未选时「开始游戏」按钮禁用并提示）；章节可选（不选=整本词库）
-   233	- 下坠速度随时间/分数递增；同屏词数 1→3；难度三档（初速/加速度/同屏数），难度可在配置页直接选（不必进设置页）
-   234	- 整局血条制，提供 3 分钟限时开关（无尽模式不显示计时；限时模式显示倒计时）；暂停每局 2 次（限时模式暂停即停表〔v3.1〕）
-   235	- 移动端小屏提示「建议键盘设备」，不提供降级玩法；词池为空提示「先去学习几个单词」〔v3.1〕
-   236	- 防作弊：每词提交 {word_id, 输入串， 首键时间， 末键时间}，服务端校验：输入串匹配（或宽松规则内）+ 输入耗时 ≥ 词长 × 40ms + word_id ∈ session 词池〔v3.1〕；失败成绩不入库。逐词日志仅用于校验与错题提取，不落库〔v3.1〕。duration_ms 提交整数（毫秒取整）〔v3.3〕
-   237	- 结算与记录：得分、正确数、最大连击、本局 WPM、历史最高分；错词自动入错题本；GameRecord 记录 difficulty + mode（无尽/限时）〔v3.3：结算页同步显示成绩是否成功入库〕
-   238	- 排行榜：按 difficulty × mode 分组；仅公网部署启用
-   239	### 模块 10：AI 建议
-   240	P3 规则引擎版：每日首次登录生成并缓存（按 D13 切日），可手动刷新。**优先级〔v3.1 口径 20〕**：按固定顺序取前 3 条——① 错误率>60% → ② 高危明日到期 → ③ 连续 7 天未学 → ④ 指法专项。每条附一键执行按钮：
-   241	1. 错误率 >60% 的词共 N 个 → 立即专项练习
-   242	2. 高危遗忘词明日到期 N 个 → 现在复习
-   243	3. 连续 7 天未学习 → 今日 10 分钟轻量计划
-   244	4. 打字：LetterStat 最慢/最常敲错字母组合 Top 5 → 指法专项（数据源：LetterStat 单字母与 bigram 独立聚合，组合 Top5 取 bigram 行，D24〔v3.1〕）
-   245	展示：仪表盘顶部卡片，最多 3 条。
-   246	**P4 LLM 版（默认规则引擎，用户自选，D28/D29/D30〔v3.3〕）**：OpenAI 兼容协议（/chat/completions）自定义接入，不绑定供应商。**凭据每用户自有**（新表 UserAiConfig）：api_base_url / api_key（AES-GCM 加密存储，永不回显明文）/ model_name / temperature / timeout（默认 30s）；用户级端点 GET/PUT /api/ai-config（key 回显脱敏 ****尾 4 位）+ POST /api/ai-config/test 连通性测试；管理员不再配置 AI（原 /api/admin/ai-config 已删除）。**引擎选择**：用户设置项 `advice_engine`（规则引擎 / AI 模型，默认规则），切换后当日缓存立即失效。**生成流程（D30）**：选 AI 时首次访问立即返回规则建议占位（note=「AI 建议生成中」），后台调用 LLM（基于真实学习数据：高错误率词、高危到期数、活跃天数、弱指法、近 7 天 WPM/正确率），成功后覆盖缓存、前端轮询自动替换；LLM 调用失败自动重试 1 次，仍失败回落规则引擎并在仪表盘展示回退原因（advice_cache.note，悬停 ⓘ 查看详情）。手动刷新限 3 次/人/日；出域数据最小化（仅统计聚合与单词拼写，不含 user_id/username）；API 生成自然语言周报（规划中）。
-   247	## 五、非功能需求
-   248	| 类别 | 要求 |
-   249	|------|------|
-   250	| 并发 | 100 用户在线；学习/练习/复习单题提交（低频，断网走 D19 重放）；考核/游戏批量提交（D9）；SQLite 写走 WAL + busy_timeout + 重试 |
-   251	| 性能 | 普通页面 P95 < 500ms；游戏 60fps（前端本地渲染判定） |
-   252	| 安全 | bcrypt；登录限流（用户名+IP）；注册 IP 级限流 10 次/小时/IP〔v3.1〕；JWT 每请求校验 + pwd_ver 校验〔v3.1〕；全局红线中间件：POST/PUT/PATCH body 携带 user_id 一律 400〔v3.3〕；SQL 全走 ORM 参数化；上传大小/行数/类型三重限制；CSV 导出公式注入转义；公网部署强制 HTTPS（Nginx TLS）〔v3.1〕；用户输入（释义/例句）渲染禁用 v-html，依赖 Vue 模板默认转义防 XSS〔v3.3 按实际落地校正，v3.2 曾写 React〕 |
-   253	| 兼容 | Chrome / Edge / Firefox / Safari 最新两大版本；响应式 |
-   254	| 界面主题 | 浅色 / 深色 / 跟随系统三态（D33〔v3.4〕）；全部页面颜色走主题变量，禁止新增硬编码色值；深色下正文文字对比度不低于 WCAG AA |
-   255	| 数据 | 每日 02:00 VACUUM INTO 在线备份，保留 30 天；上线验收含一次恢复演练〔v3.1〕；用户可导出个人全量 CSV；TypingRecord 明细保留 180 天后可归档（P4 可选）〔v3.1〕 |
-   256	| 定时任务 | APScheduler：02:00 备份；03:00 清理软删满 30 天账号 + 幂等键记录清理（24h 过期）〔v3.1〕；04:00 DailyActivity 对账校准（口径 21，仅兜底）〔v3.1 调整〕 |
-   257	| 可观测 | 结构化日志（含 user_id）；慢查询日志 |
-   258	| 数据一致性 | 熟练度等统计更新一律增量 SQL，禁止绝对值覆盖（D2 落地） |
-   259	## 六、数据模型（v3.2 定稿）
-   260	```
-   261	User(id, username, password_hash, role,
-   262	     pwd_ver,                        -- v3.1: 改密/重置 +1，JWT 校验（口径 16）
-   263	     is_deleted, created_at)
-   264	WordBook(id, name, owner_id /*null=公共*/, is_public, created_at)
-   265	Chapter(id, book_id, name, sort_order)
-   266	Word(id, chapter_id,
-   267	     book_id,                        -- v3.1: 冗余，库级判重，导入/克隆时维护
-   268	     spelling, meaning, phonetic, example, is_deleted,
-   269	     deleted_at, deleted_by)         -- v3.1: 软删留痕
-   270	UserWordStat(
-   271	  user_id, word_id,                  -- 联合主键
-   272	  proficiency, correct_count, wrong_count, near_miss_count,
-   273	  streak_correct,                    -- D21 维护
-   274	  ease_factor, interval_days, next_review_at,   -- 已掌握时为 NULL（D18 回退时恢复）
-   275	  last_wrong_at, last_correct_at)
-   276	TypingRecord(id, user_id, word_id,
-   277	             source,                 -- v3.1: study/practice/review/exam/game
-   278	             wpm, accuracy, is_correct,
-   279	             detail_json,            -- 逐字母时间戳+对错（LetterStat 数据源）
-   280	             created_at)
-   281	GameRecord(id, user_id, score, max_combo, correct_count, wpm,
-   282	           difficulty, mode,         -- 难度三档 + 无尽/限时（排行榜分组）
-   283	           is_valid, idempotency_key, created_at)   -- 幂等去重
-   284	           -- v3.1: 逐词日志仅用于校验与错题提取，不落库
-   285	ExamRecord(id, user_id, chapter_id, score, duration, blur_count,
-   286	           config_json,              -- 题型分布/限时/及格线/判定模式/
-   287	                                     --   scoring_rule/pool_source 快照（v3.1）
-   288	           detail_json, idempotency_key, created_at)
-   289	WrongBookItem(user_id, word_id, source,
-   290	              conquer_count,         -- D10 独立攻克计数，入本归零
-   291	              pinned, added_at, resolved)
-   292	StudyProgress(user_id, chapter_id, last_word_index)
-   293	DailySetting(user_id, daily_new_limit, daily_review_limit,
-   294	             loose_match, typing_guide_on, tts_on,
-   295	             review_form,             -- 打字/选择/自评（自评走 D16 映射）
-   296	             dictation_show_seconds,  -- 默认 3，范围 2–5
-   297	             practice_group_size,     -- v3.1: D23，默认 20，范围 10–50
-   298	             game_difficulty, game_limited_mode,
-   299	             game_key_sound,          -- v3.3: D31 按键音效开关，默认 1
-   300	             advice_engine,           -- v3.3: D29 建议引擎 rule/llm，默认 rule
-   301	             exam_time_limit, exam_pass_score, exam_loose_match,
-   302	             review_wrong_reshow,     -- D11 当日重现开关
-   303	             review_show_meaning)     -- v3.5: D34 复习时是否显示释义提示，默认 1
-   304	ImportJob(id, user_id, book_id, filename, status,
-   305	          parsed_json, error_report_path,
-   306	          duplicate_strategy, preview_token, expires_at)  -- token 30 分钟
-   307	LetterStat(user_id, letter,          -- v3.1 D24: 1–2 字符，单字母与 bigram 独立聚合
-   308	           avg_delay_ms, total_count, error_count,
-   309	           PRIMARY KEY(user_id, letter))
-   310	DailyActivity(user_id, date,         -- 提交时实时 upsert，04:00 对账（口径 21）
-   311	              new_count, review_count, correct_count, wrong_count,
-   312	              PRIMARY KEY(user_id, date))
-   313	-- ===== v3.1 新增表 =====
-   314	InviteCode(id, code, created_by, used_by, used_at, expires_at, is_active)
-   315	SystemSetting(key PRIMARY KEY, value_json, updated_at)
-   316	              -- 系统级配置：邀请码开关/注册开关
-   317	              -- v3.3: AI 模型全局配置迁出至 UserAiConfig（D29）
-   318	UserAiConfig(user_id PRIMARY KEY,      -- v3.3: D29 每用户自有 AI 凭据
-   319	             api_base_url, api_key_enc, -- AES-GCM 加密，永不回显明文
-   320	             model_name, temperature, timeout_s, updated_at)
-   321	GameSession(id, user_id, word_ids_json, difficulty, mode,
-   322	            status, settled, expires_at, created_at)   -- D27 词池暂存 30 分钟
-   323	IdempotencyRecord(key PRIMARY KEY, endpoint, user_id,
-   324	                  response_snapshot, created_at)       -- exam/game 头幂等 +
-   325	                                                       -- 单题 request_id 重放共用，24h 清理
-   326	-- ===== v3.3 增补 =====
-   327	AdviceCache(user_id, date, items_json, engine,           -- engine 记录实际使用引擎
-   328	            note,                       -- v3.3: D30 回退原因/生成中提示
-   329	            refresh_count, generated_at,
-   330	            PRIMARY KEY(user_id, date))
-   331	```
-   332	关键索引与约束：
-   333	```
-   334	UserWordStat(user_id, next_review_at)      -- 复习队列最高频查询
-   335	UserWordStat(user_id, proficiency)         -- 高危遗忘筛选
-   336	Word(chapter_id, is_deleted)
-   337	WordBook(owner_id)
-   338	WrongBookItem(user_id, resolved, pinned)
-   339	GameRecord(difficulty, mode, score DESC)   -- 排行榜
-   340	ImportJob(preview_token)
-   341	-- ===== v3.1 新增 =====
-   342	UNIQUE INDEX Word(book_id, spelling COLLATE NOCASE)
-   343	    WHERE is_deleted=0                     -- 并发导入判重竞态兜底（应用层校验之外）
-   344	UNIQUE WrongBookItem(user_id, word_id)     -- 防重复入本（配合口径 15 upsert）
-   345	UNIQUE GameRecord(idempotency_key) WHERE idempotency_key IS NOT NULL
-   346	UNIQUE ExamRecord(idempotency_key) WHERE idempotency_key IS NOT NULL
-   347	INDEX TypingRecord(user_id, created_at)
-   348	INDEX ExamRecord(user_id, created_at)
-   349	```
-   350	级联/软删策略：删书级联软删章节与词；UserWordStat/WrongBookItem 保留；出题一律 join is_deleted=0；账号清理时物理删除用户及其私有数据。
-   351	## 七、API 概要（v3.1）
-   352	```
-   353	通用：错误 {code, message, detail?}；分页 page/page_size（≤200）
-   354	      幂等头 Idempotency-Key（exam/game）；单题 body.request_id（study/practice/review，D19）
-   355	      user_id 一律取自 JWT，拒绝 body 传入
-   356	认证：POST /api/auth/register | login | logout | password
-   357	      （register 公网+开关开启时必填 invite_code；
-   358	        改密/重置后 pwd_ver+1，旧 token 401〔v3.1〕；logout 仅约定前端删 token）
-   359	管理：GET    /api/admin/users                       （用户列表，含软删状态）
-   360	      POST   /api/admin/users/{id}/reset-password   （D6，随机临时密码一次性展示）
-   361	      POST   /api/admin/users/{id}/restore          （软删 30 天内恢复）
-   362	      GET/POST/PATCH /api/admin/invite-codes        （v3.1 D25 批量生成/列表/停用）
-   363	      GET    /api/admin/devdata/summary             （v3.3 测试数据总览，?user_id= 目标用户）
-   364	      POST   /api/admin/devdata/seed                （v3.3 注入测试数据：高错误率词/高危到期/
-   365	                                                             清活跃/弱指法/打字/游戏记录；
-   366	                                                             body.target_user_id；注入后当日建议缓存失效）
-   367	      POST   /api/admin/devdata/clear               （v3.3 清空目标用户全部学习数据）
-   368	      （v3.3：/api/admin/ai-config 系列已删除，AI 凭据改用户级，见 D29）
-   369	      词库公共管理复用 /api/books 系列（admin 鉴权）
-   370	设置：GET/PUT /api/settings                        （v3.1 D26，部分更新+范围校验；
-   371	                                                    v3.3 增 game_key_sound / advice_engine；
-   372	                                                    v3.5 增 review_show_meaning（D34，0/1 默认 1））
-   373	AI  ：GET/PUT /api/ai-config                       （v3.3 D29 用户自有凭据，key 回显脱敏）
-   374	      POST   /api/ai-config/test                   （v3.3 D29 连通性测试）
-   375	词库：POST   /api/books/import            （multipart；≥1000 行返回 jobId 异步解析）
-   376	      GET    /api/books/import/{jobId}    （轮询状态；完成返回 preview_token）
-   377	      GET    /api/books/import/preview    （?token= 预览统计+错误行明细）
-   378	      POST   /api/books/import/confirm    （?token= + duplicate_strategy）
-   379	      GET    /api/books/{id}/export       （CSV，公式注入转义）
-   380	      POST   /api/books/{id}/clone        （公共库→私有副本）
-   381	      GET/POST/PATCH/DELETE /api/books, /api/chapters, /api/words
-   382	      （词列表支持 ?q= 搜索 + 分页）
-   383	      DELETE /api/books/{id}/chapters           （v3.3 D32 一键清空章节，保留单词）
-   384	      POST   /api/books/{id}/resplit            （v3.3 D32 重新划分单元：
-   385	             ?words_per_chapter= 或 ?unit_count= 二选一，随机分配）
-   386	发音：GET  /api/tts                      （v3.3 匿名音频端点；?text=&accent=us|uk，
-   387	                                         edge-tts 合成 + 磁盘缓存）
-   388	学习：GET  /api/study/next        （续学位置+单词+今日新词剩余额度）
-   389	      POST /api/study/self-rate   （单题，request_id）
-   390	      POST /api/study/dictation   （单题，request_id）
-   391	练习：POST /api/practice/session  （创建，返回题目，组规格 D23）
-   392	      POST /api/practice/answer   （单题实时判分，request_id + detail_json）
-   393	考核：POST /api/exam/start | submit （submit 幂等头 + config 快照）
-   394	复习：GET  /api/review/today      （队列+剩余额度）
-   395	      POST /api/review/answer     （单题，request_id；自评走 D16 映射）
-   396	游戏：POST /api/game/start       （v3.1 D27：服务端抽词池，生成 session）
-   397	      POST /api/game/submit      （session_id + 逐词日志，服务端校验，幂等头）
-   398	统计：GET  /api/stats/dashboard | trend | calendar
-   399	建议：GET  /api/advice             （D30〔v3.3〕：当日缓存 + note 字段；选 AI 引擎时
-   400	                                   立即返回规则占位、后台生成后前端轮询替换；
-   401	                                   手动刷新限 3 次/日）
-   402	错题：GET/POST/PATCH /api/wrongbook
-   403	导出：GET  /api/export/account     （个人全量数据 CSV 包）
-   404	```
-   405	## 八、开发分期与验收标准
-   406	| 阶段 | 内容 | 验收标准（关键项） |
-   407	|------|------|------------------|
-   408	| P0 | 用户管理（含邀请码 D25、pwd_ver）、词库导入（三步制+异步解析）、学习模式（TTS/续学/默写卡 D17/额度联动）、打字练习（判定+指法引导+localStorage 续练+断网重放 D19）、设置 API（D26） | ① 两用户并发操作数据不串（A/B 交替答题 100 次交叉断言）② GBK CSV 正确导入 ③ 断网后本机恢复练习进度不丢失 ④ 23:50/00:10 学习，连续天数/额度切日正确（D13）⑤ 同书导入重复词被识别（忽略大小写）⑥ 断网期间答题，恢复网络自动重放且不重复计数（D19）〔v3.1〕 ⑦ 改密后旧 token 请求 401（口径 16）〔v3.1〕 |
-   409	| P1 | 熟练度算法（含 D21 streak）、SM-2 循环（含 D11/D16）、错题本（D10+口径 14/15）、已掌握回退（D18）、仪表盘 | ① 答对/答错后 next_review_at 按算法变化；自评设值后首次 next_review_at = +3d/+1d 正确 ② 错词独立计数连对 3 次自动移出；入本前连对不带入计数 ③ 每日额度截断生效，新词/复习互不挤占 ④ 复习答错当日重现一次且仅一次（开关生效）⑤ 复习自评三键按 D16 映射执行（间隔/ease/p 变化正确）〔v3.1〕 ⑥ 已掌握词答错 p<80 → 重新入循环，next=+1d（D18）〔v3.1〕 ⑦ 复习释义开关保存后即时生效：关→默写无释义提示，开→恢复释义显示（D34）〔v3.5〕 |
-   410	| P2 | 考核模式（D20/D22/口径 22）、游戏模式（D27/口径 19） | ① 切屏计入成绩单 ② 改包提交被判无效（耗时 < 词长×40ms 或 word∉session 词池）③ Combo 倍率阶梯（5/10/15/20）与高度加成计算正确，退格不断/落地断 ④ 近似错误考核按 config 快照计 0.5 分（D20）〔v3.1〕 ⑤ 交卷幂等：重复提交不重复入库 ⑥ 中断未交卷 → 作废无记录 ⑦ 出题池已学优先策略与快照一致（D22）〔v3.1〕 ⑧ 游戏 submit 的 word_id 不在 session 词池时判无效（D27）〔v3.1〕 |
-   411	| P3 | AI 建议（规则版+LetterStat bigram）、打卡成就、排行榜（分组）、导出 | ① 每条建议可一键执行且行为正确，取前 3 优先级固定（口径 20）② 打卡口径：任一模式 1 次提交即打卡，当日实时可见 ③ 排行榜按 difficulty×mode 分组 ④ AI 凭据每用户自有：连通测试可用、key 回显脱敏、调用失败（重试 1 次后）回落规则引擎并展示原因、手动刷新限 3 次/日（D28/D29）〔v3.3〕 ⑤ 选 AI 引擎时仪表盘不阻塞白屏：立即返回规则占位，后台生成后自动替换（D30）〔v3.3〕 ⑥ 全局深色模式：三态切换即时生效，刷新后偏好保持；全站页面（含 Element Plus 组件）深色下无可读性问题；跟随系统模式响应系统主题变化（D33）〔v3.4〕 |
-   412	| P4 | LLM 建议（D29 已落地）、已掌握词重检、TypingRecord 归档、PostgreSQL 迁移 | 视需要启动 |
-   413	## 九、数据隔离专项设计（重点保障）
-   414	- **后端**：无全局用户状态；Repository 基类强制拼接 user_id，禁止裸写过滤 SQL。IdempotencyRecord / GameSession / ImportJob / TypingRecord 等一切查询均过基类过滤（SystemSetting 为全局配置除外）〔v3.1〕
-   415	- **前端**：localStorage 键统一 {userId}: 前缀（含 D12 练习进度、D19 pending 重放队列〔v3.1〕）；登出清空本用户缓存
-   416	- **测试**：P0 并发隔离自动化用例——「用户 A、B 交替答题 100 次，交叉断言各自统计仅自己变化」
-   417	- **日志**：所有写操作带 user_id，串数据 5 分钟内定位请求链
-   418	- **API 层**：user_id 只从 JWT 解析
-   419	## 十、开发期默认口径备忘 〔v3.1 新增〕
-   420	以下为低优先级默认值，开发中可拍板调整，不阻塞定稿：
-   421	1. 章节内单词默认按导入顺序（id 升序）；克隆副本命名「原名-副本」
-   422	2. 导入异步解析前端轮询间隔 2s
-   423	3. admin 重置密码生成随机临时密码一次性展示，提示首次登录改密
-   424	4. 四选一干扰项与正确项释义重复时重新抽取
-   425	5. 游戏词池为空提示「先去学习几个单词」
-   426	6. 限时模式暂停即停表；默写卡展示期可点击跳过
-   427	7. 导出 CSV 的释义/例句渲染一律转义（防 XSS、防公式注入）
-   428	8. 管理端「测试数据调整」面板（devdata）仅供测试环境验证建议/统计触发条件，生产部署建议移除或加开关（v3.3）
-   429	9. 真实词库导入脚本（kajweb/dict NDJSON zip，30 词/Unit）为一次性数据准备工具，不属产品功能（v3.3）
-   430	## 附录 A：单词生命周期状态机（v3.1 更新）
-   431	```
-   432	[新词] --学习自评(D8)--> 设 proficiency, 入 SM-2 循环
-   433	     认识: p=60, next=+3d   模糊: p=30, next=+1d   不认识: p=0, next=+1d(当轮重刷)
-   434	[新词] --学习默写(D17〔v3.1〕)--> 完全正确: p=60,+3d / 近似: p=30,+1d / 错误: p=0,+1d(当轮重刷)
-   435	[循环中: 巩固中/高危遗忘] --每日复习队列-->
-   436	     答对推进间隔 / 答错重置+当日重现(D11) / 近似间隔减半
-   437	     复习形式=自评时按 D16 映射〔v3.1〕: 认识→答对 / 模糊→近似 / 不认识→答错
-   438	[已掌握: p≥80] --> next_review_at=NULL, 退出队列（错题/练习仍可触达统计）
-   439	[已掌握] --任意模式答错致 p<80 (D18〔v3.1〕)--> 回[巩固中]: interval=1d, next=+1d, ease 沿用(下限1.3)
-   440	[已掌握] --P4 可选重检--> 回循环
-   441	```
-   442	## 附录 B：游戏交互协议（D1 落地细则，v3.1 更新）
-   443	```
-   444	0. 开局（D27〔v3.1〕）: POST /api/game/start → 服务端抽词池（高危 30% 优先）→ 生成
-   445	   session（30 分钟有效）；submit 校验 word_id∈池
-   446	1. 键入首字母 → 锁定目标词（优先级：已敲部分 > 未敲；同级取最低者）
-   447	2. 被锁定词冻结下落；其余词继续下落
-   448	3. 敲对：匹配指针 +1；敲错：闪红、指针不动、错误字符入输入串（可退格）
-   449	4. 输入串长度 == 词长 → 自动判定：
-   450	     匹配（含宽松）→ 销毁，加分 = (10 + 词长×2 + round(10×剩余高度÷初始高度))
-   451	                      × Combo 倍率（连对 5→×1.5 / 10→×2.0 / 15→×2.5 / 20→×3.0 上限）
-   452	     不匹配         → 扣血 1，该词弹回顶部重下落（Combo 清零）
-   453	5. 任一词触底 → 扣血 1（Combo 清零）；血量 0 → 结算
-   454	6. 退格：删除末字符，不扣血、不断 Combo，计入准确率分母
-   455	7. 锁定词被消灭/弹回后 → 释放锁定，回到步骤 1
-   456	8. 中断（关页面无结算）〔v3.1〕→ 成绩不入库、不入错题本
-   457	```
-   458	## 附录 C：打字指标口径（v3.1 更新）
-   459	```
-   460	WPM     = 正确字符数 / 5 / 有效输入分钟数
-   461	          有效输入分钟数〔v3.1 口径13〕= 该题首键→末键墙钟时间；
-   462	          默写卡展示期、等待期不计；游戏为整局有效输入时长（暂停剔除）
-   463	准确率   = 正确击键数 / 总击键数（错误击键计入，退格键不计）
-   464	字母延迟 = 相邻 keydown 时间差 → 前端热力图 + TypingRecord.detail_json
-   465	          → LetterStat 聚合（单字母与 bigram 独立成行，D24〔v3.1〕）
-   466	```
-   467	---
-   468	**合并说明（3 处同步回写已完成）**：① D17/D18 已写入附录 A 状态机；② 模块 6 错题本来源补「学习」并写入计数行为；③ P0–P3 验收标准新增 ⑥⑦ ⑧ 项与 D16–D28 对应。文档现在自洽、无交叉矛盾，可直接作为开发依据；如后续评审再触发变更，建议继续沿用 〔v3.x〕 标注方式追加，不重写历史章节。
-   469	
-   470	**v3.3 回写说明**：① D28 由 D29 部分取代（AI 凭据/引擎选择归用户自有），D30–D32 为新增决策；② 数据模型/API/验收标准已同步；③ 前端技术栈按实际落地校正为 Vue 3；④ 其余章节未标注处继续沿用 v3.1/v3.2 决策。
-   471	
-   472	**v3.5 回写说明**：① 新增 D34 复习释义显示开关（设置项 `review_show_meaning`，默认开），已同步版本摘要、模块 8 复习循环、数据模型 DailySetting、API 概要 settings 端点与 P1 验收标准；② 同时回写复习作答卡的实际落地行为：自评/选择形式作答时展示单词拼写与音标，答题反馈区展示正确答案（拼写+音标+释义）。
+   156	| 例句挖空填词（显示与空态〔2026-10-04〕） | **英文挖空句一行 + 中文释义一行**，释义取 word.meaning。全库仅 14% 词有例句，按章节勾选可能一题都出不来：勾了但无题 → 响应带 `skipped:[{type,reason:"no_example"}]`，toast 提示「换个章节或取消勾选『例句挖空』」，其余题型照常出题；**全部勾选题型都无题 → 400 EMPTY_QUESTION_POOL，不返回空题组**（返回空数组会让 running=true 而 current=null，模板不渲染 → 整页空白，属已修 bug） |
+   157	| 按词组卷（建议直达〔2026-10-04〕） | `word_ids` 非空时按指定词出题，优先于 `chapter_ids`。供仪表盘「错误率>60% 专项练习」直达：进页跳过词库/章节选择直接开跑，题头标「来自『今日建议』的专项练习」；进页后立即 `router.replace` 清 query（防刷新与 keep-alive 重入重复开组），故 ids 须快照进普通 ref 再用 |
+   158	出题算法：
+   159	- 勾选题型均匀轮询出题，某题型可用池为空时自动跳过并按比例补偿
+   160	- 答错的词在本组练习内以 50% 概率重现，插入本组题队尾部（D23）〔v3.1〕
+   161	- 组规格（D23〔v3.1〕）：每组默认 20 题（可配 10–50）+ 手动结束（已答部分正常计分）；同词组内除重现一次外不重复
+   162	判定规则（全局约定，用户可设置严格/宽松）：
+   163	1. 去除首尾空格，统一小写比较
+   164	2. 严格模式：完全匹配才算对
+   165	3. 宽松模式（默认开）：Levenshtein ≤1 判「近似错误」→ 按答错计熟练度惩罚（p−12），但不重置复习间隔、不重现；streak 不清零不增长（D21）〔v3.1〕
+   166	打字专项：
+   167	- 指法引导：虚拟键盘高亮下一字母 + 手指分区颜色（可关闭）
+   168	- 实时统计：本组 WPM、准确率、逐字母延迟热力图（公式见第二章/附录 C）
+   169	- 中断保护（D12）：进度每 30 秒写 localStorage，重新进入本机可恢复；不做服务端续练
+   170	- 断网重放（D19〔v3.1〕）：单题提交失败进 pending 队列（localStorage，同 {userId}: 前缀），恢复网络自动重放；请求携带 request_id（uuid），服务端 24h 幂等去重。考核除外（中断即作废）
+   171	结果页：逐词对错列表，错词一键加入错题本。
+   172	单题实时提交（D9），前端逐题上报 TypingRecord（含 source=practice、detail_json 逐字母时间戳，供 LetterStat 聚合〔v3.1〕）。
+   173	### 模块 5：考核模式
+   174	| 功能 | 规格定义 |
+   175	|------|---------|
+   176	| 组卷配置 | 题型 × 题量、限时（默认 20 分钟）、及格线（默认 60）、判定模式（默认严格）；宽松模式下近似错误按 0.5 分计（D20）〔v3.1〕 |
+   177	| 计分公式 〔v3.1 D20〕 | 每题 1 分：score = round(得分 ÷ 题量 × 100)；计分口径写入 config_json.scoring_rule 快照 |
+   178	| 出题池 〔v3.1 D22〕 | 已学优先：先取该章节已入 UserWordStat 的词，不足题量从该章节未删除词随机补齐；策略快照 config_json.pool_source |
+   179	| 规则 | 不可回看修改；时间到自动交卷；禁用粘贴（paste 事件阻止）；页面失焦计数写入成绩单 |
+   180	| 中断处理 | 交卷前关闭页面/断网 → 该卷作废，不计成绩、不占历史，答题数据不保存。刷新/关闭页面 = 作废（beforeunload 拦截提示）；「时间到自动交卷」请求失败 → 携幂等键重试 3 次，仍失败 = 作废〔v3.1，口径 22〕 |
+   181	| 交卷 | 批量提交（D9）+ Idempotency-Key（24h 幂等，重复提交返回首次结果） |
+   182	| 成绩单 | 总分、正确率、平均每题用时、逐题明细、失焦次数、错词一键加入错题本；ExamRecord 存储组卷配置快照（题型分布/限时/及格线/判定模式/计分口径/出题池策略），保证默认值变更后历史成绩可解释 |
+   183	| 历史成绩 | 列表 + 趋势折线图 |
+   184	### 模块 6：错题本
+   185	| 功能 | 规格定义 |
+   186	|------|---------|
+   187	| 归集来源 | 练习 / 考核 / 复习 / 游戏 / **学习默写答错**（D17）〔v3.1〕自动进入 |
+
+
+   188	| 攻克规则（D10） | conquer_count 独立计数，入本时归零；任意模式答对 +1，连续答对 3 次自动移出（resolved=1，历史保留可查）；答错归零重计。**计数行为〔v3.1 口径 14〕**：判定答对（练习/复习/考核/游戏销毁/学习默写正确）+1；自评（学习/复习）不计数 |
+   189	| 重新入本 〔v3.1 口径 15〕 | resolved=1 的词再次答错 → resolved=0、conquer_count=0、added_at=now、source 取最近来源（同词同用户仅一行 upsert） |
+   190	| 手动操作 | 移入 / 移出 / 置顶 |
+   191	| 独立入口 | 「错题本专项练习」 |
+   192	### 模块 7：数据指标与仪表盘
+   193	熟练度算法（定稿）：
+   194	- 初始值 0；自评设值：认识=60，模糊=30，不认识=0（D8，仅学习模式）；设值后 streak=0（D21）〔v3.1〕
+   195	- 答对：proficiency = MIN(100, proficiency + 10 × MIN(streak_correct, 3))；streak+1〔v3.1〕
+   196	- 答错：proficiency = MAX(0, proficiency − 25)；streak 清零〔v3.1〕
+   197	- 近似错误：proficiency = MAX(0, proficiency − 12)；streak 不清零不增长〔v3.1〕
+   198	- 状态：≥80 已掌握（next_review_at 置 NULL，退出复习循环）；40–79 巩固中；<40 高危遗忘
+   199	- **已掌握回退（D18〔v3.1〕）**：已掌握词在任意模式答错致 p<80 → 状态回「巩固中」，interval 重置 1 天、next_review_at=+1d、ease 沿用（下限 1.3），重新入复习队列（已同步附录 A）
+   200	- 「N 天后低频重检」为 P4 可选，默认关
+   201	打卡定义：当日任一模式完成 ≥1 次有效提交（自评/答题/交卷/游戏结算）即打卡。**数据写入〔v3.1 口径 21〕**：提交时实时 upsert DailyActivity（当日打卡/热力图即时可见），04:00 任务仅做对账校准。
+   202	记录维度：熟练度、总次数、对/错/近似次数、错误率、连对、最近对错时间、WPM、准确率。
+   203	仪表盘：今日待复习数、今日新学数、连续天数、打卡热力图（DailyActivity 预聚合）、熟练度分布饼图、WPM/准确率趋势（TypingRecord.source 支持按模式区分〔v3.1〕）、未来 7 天复习量条形图。
+   204	### 模块 8：复习循环（SM-2）
+   205	- ease 初始 2.5，下限 1.3；间隔序列 1天 → 3天 → 之后 = 上次间隔 × ease
+   206	- 答对：间隔推进，ease +0.05（上限 3.0）
+   207	- 答错：间隔重置 1 天，ease −0.2；该词当日队列重现一次（D11，可关）
+   208	- 近似错误：间隔减半（不低于 1 天），ease −0.1；不当日重现
+   209	**复习形式与自评映射（D16〔v3.1〕）**：复习形式可配置——打字默写（默认）/ 选择 / 自评。形式=自评时：
+   210	| 复习自评 | 映射处理 |
+   211	|---------|---------|
+   212	| 认识 | 按答对处理：间隔推进、ease+0.05、streak+1、p+10×MIN(streak,3) |
+   213	| 模糊 | 按近似错误处理：间隔减半（≥1天）、ease−0.1、p−12、streak 不变、不当日重现 |
+   214	| 不认识 | 按答错处理：间隔重置 1 天、ease−0.2、p−25、streak 清零、受 D11 开关控制当日重现 |
+   215	**释义显示（D34〔v3.5〕）**：复习作答是否展示释义提示由用户设置 `review_show_meaning`（默认开）控制：开启时打字默写显示中文释义与音标（看义默写）；关闭时不显示释义、仅听发音默写。选择形式（释义为作答目标）与自评形式（展示拼写、回忆释义）不显示释义提示；答题反馈区始终展示正确答案（拼写+音标+释义）。
+   216	流量（2026-09-23 改版）：复习队列无上限——全部学过的词每日全量物化进队（含熟练度≥80 的已掌握词，next_review_at=NULL 排队尾巩固），逾期优先、熟练度升序；每日新词/复习额度均为历史概念（列保留免重建表）。
+   217	出题顺序：逾期词 → 高危遗忘 → 巩固中。
+   218	单词生命周期状态机：见附录 A（v3.1 已更新 D17/D18 路径）。
+   219	### 模块 9：游戏模式（下坠打字）
+   220	核心规则（D1，交互协议详见附录 B）：
+   221	- 单词从顶部下落，逐字母实时匹配：输入即锁定目标词；被锁定的词冻结下落，其余词继续
+   222	- 锁定优先级：已敲字母的词 > 未敲词；同级取离底部最近
+   223	- 敲对字母前进；敲错字母闪红但仍计入输入串，可退格（退格不扣血、不断 Combo，计入准确率）
+   224	- 输入串长度 = 词长时自动判定（无提交键）：完全正确 → 销毁；宽松规则内近似 → 销毁（按「近似」得分比计分）；否则 → 扣血 + 该词弹回顶部重新下落
+   225	- 落地未打完 → 按已输入正确字符占比计部分分并扣血；落地与敲错提交均断 Combo；退格不断
+   226	- **大小写敏感**：`Apple ≠ apple`，大小写不同即算错误字符（首字母大写差 1 个字符，判「近似」）
+   227	计分（口径 19，2026-09-19 改版；公式与配置见 docs/口径总纲.md）：
+   228	- 单词得分 = ceil(得分比 × 该词落地时限 × Combo 倍率)（2026-09-19 改：不再乘 10）
+   229	- 落地时限 = ceil(字母数 ÷ 3 ÷ 难度系数)（简单 ×0.8 / 普通 ×1.0 / 困难 ×1.25），下限 2s；词库「限时秒」不参与游戏下坠
+   230	- 得分比 = 输入正确的字符数 ÷ 全部字符数（连续值，大小写敏感）——与考核同源，不再有三档配置；放弃或触线同样按已输入正确字符占比计
+   231	- Combo 阶梯：连对 5 词→×1.5、10 词→×2.0、15 词→×2.5、20 词→×3.0（上限）；销毁计入，落地 / 敲错弹回 / 放弃清零（按 ×1.0 计部分分）
+   232	**开局协议（D27〔v3.1〕）**：POST /api/game/start 携带章节勾选+难度+模式；服务端把所选范围（章节勾选）全部词洗牌成词池整体下发（前端不可信），前端逐问从池中随机抽、局内不放回；生成 session（30 分钟有效）；submit 携带 session_id，校验 word_id∈池、session 未结算。**中断（关页面无结算）→ 不入库、不入错题本**〔v3.1〕。
+   233	其他：
+   234	- **沉浸式对局 UI（D31〔v3.3〕）**：点「开始游戏」后整页切换深色渐变沉浸模式（顶部导航上收，鼠标悬停浮现），配置/结算页保持常规浅色；游戏区 85% 宽度居中；一体化悬浮状态栏：生命值（掉血红闪）+ 大号分数 + 金色连击徽章（连击跳动）+ 倒计时 + 暂停圆形按钮（带剩余次数角标）；暂停时画面模糊 + 居中面板（继续游戏/重新开始/退出游戏，退出=立即结算）；底部输入条仅锁定单词后出现，目标词逐字符高亮（正确黄/错误红/未输入灰），输入正确闪绿光、错误闪红光+轻震
+   235	- **按键音效（D31〔v3.3〕）**：WebAudio 合成（正确 880Hz / 错误 200Hz），设置页开关 `game_key_sound`（默认开）
+   236	- **开局校验（D31〔v3.3〕）**：必须先选择词库才能开始（未选时「开始游戏」按钮禁用并提示）；章节可多选+全选（2026-09-23 排行榜新口径：按所选章节集合分组——不选/选满全部章节=整本词库榜；单选=该章节榜；多选=该组合专属榜，词池相同才互比，各榜互不相通）
+   237	- 下坠速度随时间/分数递增；难度三档同时决定**单题下坠时限系数**（简单 ×0.8 / 普通 ×1.0 / 困难 ×1.25）与画面节奏（初速 / 加速度 / 同屏数 / 生成间隔，默认同屏 2 / 3 / 4 词）；难度可在开局表单直接选，系数写死在代码、管理端不可配
+   238	- 整局血条制：**上限 500 点，掉血 = (1 − 得分比) × 100**（满分不掉血）；提供 3 分钟限时开关（无尽模式不显示计时；限时模式显示倒计时）；暂停每局 2 次（限时模式暂停即停表〔v3.1〕）
+   239	- 移动端小屏提示「建议键盘设备」，不提供降级玩法；词池为空提示「先去学习几个单词」〔v3.1〕
+   240	- 防作弊：每词提交 {word_id, 输入串， 首键时间， 末键时间}，服务端校验：输入串匹配（或宽松规则内）+ 输入耗时 ≥ 词长 × 40ms + word_id ∈ session 词池〔v3.1〕；失败成绩不入库。逐词日志仅用于校验与错题提取，不落库〔v3.1〕。duration_ms 提交整数（毫秒取整）〔v3.3〕
+   241	- 结算与记录：得分、正确数、最大连击、本局 WPM、历史最高分；错词自动入错题本；GameRecord 记录 difficulty + mode（无尽/限时）〔v3.3：结算页同步显示成绩是否成功入库〕
+   242	- 排行榜：按 difficulty × mode 分组；仅公网部署启用
+   243	### 模块 10：AI 建议
+   244	P3 规则引擎版：每日首次登录生成并缓存（按 D13 切日），可手动刷新。**优先级〔v3.1 口径 20〕**：按固定顺序取前 3 条——① 错误率>60% → ② 高危明日到期 → ③ 连续 7 天未学 → ④ 指法专项。每条附一键执行按钮：
+   245	1. 错误率 >60% 的词共 N 个 → 立即专项练习
+   246	2. 高危遗忘词明日到期 N 个 → 现在复习
+   247	3. 连续 7 天未学习 → 今日 10 分钟轻量计划
+   248	4. 打字：LetterStat 最慢/最常敲错字母组合 Top 5 → 指法专项（数据源：LetterStat 单字母与 bigram 独立聚合，组合 Top5 取 bigram 行，D24〔v3.1〕）
+   249	展示：仪表盘顶部卡片，最多 3 条。
+   250	**P4 LLM 版（默认规则引擎，用户自选，D28/D29/D30〔v3.3〕）**：OpenAI 兼容协议（/chat/completions）自定义接入，不绑定供应商。**凭据每用户自有**（新表 UserAiConfig）：api_base_url / api_key（AES-GCM 加密存储，永不回显明文）/ model_name / temperature / timeout（默认 30s）；用户级端点 GET/PUT /api/ai-config（key 回显脱敏 ****尾 4 位）+ POST /api/ai-config/test 连通性测试；管理员不再配置 AI（原 /api/admin/ai-config 已删除）。**引擎选择**：用户设置项 `advice_engine`（规则引擎 / AI 模型，默认规则），切换后当日缓存立即失效。**生成流程（D30）**：选 AI 时首次访问立即返回规则建议占位（note=「AI 建议生成中」），后台调用 LLM（基于真实学习数据：高错误率词、高危到期数、活跃天数、弱指法、近 7 天 WPM/正确率），成功后覆盖缓存、前端轮询自动替换；LLM 调用失败自动重试 1 次，仍失败回落规则引擎并在仪表盘展示回退原因（advice_cache.note，悬停 ⓘ 查看详情）。手动刷新限 3 次/人/日；出域数据最小化（仅统计聚合与单词拼写，不含 user_id/username）；API 生成自然语言周报（规划中）。
+   251	## 五、非功能需求
+   252	| 类别 | 要求 |
+   253	|------|------|
+   254	| 并发 | 100 用户在线；学习/练习/复习单题提交（低频，断网走 D19 重放）；考核/游戏批量提交（D9）；SQLite 写走 WAL + busy_timeout + 重试 |
+   255	| 性能 | 普通页面 P95 < 500ms；游戏 60fps（前端本地渲染判定） |
+   256	| 安全 | bcrypt；登录限流（用户名+IP）；注册 IP 级限流 10 次/小时/IP〔v3.1〕；JWT 每请求校验 + pwd_ver 校验〔v3.1〕；全局红线中间件：POST/PUT/PATCH body 携带 user_id 一律 400〔v3.3〕；SQL 全走 ORM 参数化；上传大小/行数/类型三重限制；CSV 导出公式注入转义；公网部署强制 HTTPS（Nginx TLS）〔v3.1〕；用户输入（释义/例句）渲染禁用 v-html，依赖 Vue 模板默认转义防 XSS〔v3.3 按实际落地校正，v3.2 曾写 React〕 |
+   257	| 兼容 | Chrome / Edge / Firefox / Safari 最新两大版本；响应式 |
+   258	| 界面主题 | 浅色 / 深色 / 跟随系统三态（D33〔v3.4〕）；全部页面颜色走主题变量，禁止新增硬编码色值；深色下正文文字对比度不低于 WCAG AA |
+   259	| 数据 | 每日 02:00 VACUUM INTO 在线备份，保留 30 天；上线验收含一次恢复演练〔v3.1〕；用户可导出个人全量 CSV；TypingRecord 明细保留 180 天后可归档（P4 可选）〔v3.1〕 |
+   260	| 定时任务 | APScheduler：02:00 备份；03:00 清理软删满 30 天账号 + 幂等键记录清理（24h 过期）〔v3.1〕；04:00 DailyActivity 对账校准（口径 21，仅兜底）〔v3.1 调整〕 |
+   261	| 可观测 | 结构化日志（含 user_id）；慢查询日志 |
+   262	| 数据一致性 | 熟练度等统计更新一律增量 SQL，禁止绝对值覆盖（D2 落地） |
+   263	## 六、数据模型（v3.2 定稿）
+   264	```
+   265	User(id, username, password_hash, role,
+   266	     pwd_ver,                        -- v3.1: 改密/重置 +1，JWT 校验（口径 16）
+   267	     is_deleted, created_at)
+   268	WordBook(id, name, owner_id /*null=公共*/, is_public, created_at)
+   269	Chapter(id, book_id, name, sort_order)
+   270	Word(id, chapter_id,
+   271	     book_id,                        -- v3.1: 冗余，库级判重，导入/克隆时维护
+   272	     spelling, meaning, phonetic, example, is_deleted,
+   273	     deleted_at, deleted_by)         -- v3.1: 软删留痕
+   274	UserWordStat(
+   275	  user_id, word_id,                  -- 联合主键
+   276	  proficiency, correct_count, wrong_count, near_miss_count,
+   277	  streak_correct,                    -- D21 维护
+   278	  ease_factor, interval_days, next_review_at,   -- 已掌握时为 NULL（D18 回退时恢复）
+   279	  last_wrong_at, last_correct_at)
+   280	TypingRecord(id, user_id, word_id,
+   281	             source,                 -- v3.1: study/practice/review/exam/game
+   282	             wpm, accuracy, is_correct,
+   283	             detail_json,            -- 逐字母时间戳+对错（LetterStat 数据源）
+   284	             created_at)
+   285	GameRecord(id, user_id, score, max_combo, correct_count, wpm,
+   286	           difficulty, mode,         -- 难度三档 + 无尽/限时（排行榜分组）
+   287	           is_valid, idempotency_key, created_at)   -- 幂等去重
+   288	           -- v3.1: 逐词日志仅用于校验与错题提取，不落库
+   289	ExamRecord(id, user_id, chapter_id, score, duration, blur_count,
+   290	           config_json,              -- 题型分布/限时/及格线/判定模式/
+   291	                                     --   scoring_rule/pool_source 快照（v3.1）
+   292	           detail_json, idempotency_key, created_at)
+   293	WrongBookItem(user_id, word_id, source,
+   294	              conquer_count,         -- D10 独立攻克计数，入本归零
+   295	              pinned, added_at, resolved)
+   296	StudyProgress(user_id, chapter_id, last_word_index)
+   297	DailySetting(user_id, daily_new_limit, daily_review_limit,
+   298	             loose_match, typing_guide_on, tts_on,
+   299	             review_form,             -- 打字/选择/自评（自评走 D16 映射）
+   300	             dictation_show_seconds,  -- 默认 3，范围 2–5
+   301	             practice_group_size,     -- v3.1: D23，默认 20，范围 10–50
+   302	             game_difficulty, game_limited_mode,
+   303	             game_key_sound,          -- v3.3: D31 按键音效开关，默认 1
+   304	             advice_engine,           -- v3.3: D29 建议引擎 rule/llm，默认 rule
+   305	             exam_time_limit, exam_pass_score, exam_loose_match,
+   306	             review_wrong_reshow,     -- D11 当日重现开关
+   307	             review_show_meaning)     -- v3.5: D34 复习时是否显示释义提示，默认 1
+   308	ImportJob(id, user_id, book_id, filename, status,
+   309	          parsed_json, error_report_path,
+   310	          duplicate_strategy, preview_token, expires_at)  -- token 30 分钟
+   311	LetterStat(user_id, letter,          -- v3.1 D24: 1–2 字符，单字母与 bigram 独立聚合
+   312	           avg_delay_ms, total_count, error_count,
+   313	           PRIMARY KEY(user_id, letter))
+   314	DailyActivity(user_id, date,         -- 提交时实时 upsert，04:00 对账（口径 21）
+   315	              new_count, review_count, correct_count, wrong_count,
+   316	              PRIMARY KEY(user_id, date))
+   317	-- ===== v3.1 新增表 =====
+   318	InviteCode(id, code, created_by, used_by, used_at, expires_at, is_active)
+   319	SystemSetting(key PRIMARY KEY, value_json, updated_at)
+   320	              -- 系统级配置：邀请码开关/注册开关
+   321	              -- v3.3: AI 模型全局配置迁出至 UserAiConfig（D29）
+   322	UserAiConfig(user_id PRIMARY KEY,      -- v3.3: D29 每用户自有 AI 凭据
+   323	             api_base_url, api_key_enc, -- AES-GCM 加密，永不回显明文
+   324	             model_name, temperature, timeout_s, updated_at)
+   325	GameSession(id, user_id, word_ids_json, difficulty, mode,
+   326	            status, settled, expires_at, created_at)   -- D27 词池暂存 30 分钟
+   327	IdempotencyRecord(key PRIMARY KEY, endpoint, user_id,
+   328	                  response_snapshot, created_at)       -- exam/game 头幂等 +
+   329	                                                       -- 单题 request_id 重放共用，24h 清理
+   330	-- ===== v3.3 增补 =====
+   331	AdviceCache(user_id, date, items_json, engine,           -- engine 记录实际使用引擎
+   332	            note,                       -- v3.3: D30 回退原因/生成中提示
+   333	            refresh_count, generated_at,
+   334	            PRIMARY KEY(user_id, date))
+   335	```
+   336	关键索引与约束：
+   337	```
+   338	UserWordStat(user_id, next_review_at)      -- 复习队列最高频查询
+   339	UserWordStat(user_id, proficiency)         -- 高危遗忘筛选
+   340	Word(chapter_id, is_deleted)
+   341	WordBook(owner_id)
+   342	WrongBookItem(user_id, resolved, pinned)
+   343	GameRecord(difficulty, mode, score DESC)   -- 排行榜
+   344	ImportJob(preview_token)
+   345	-- ===== v3.1 新增 =====
+   346	UNIQUE INDEX Word(book_id, spelling COLLATE NOCASE)
+   347	    WHERE is_deleted=0                     -- 并发导入判重竞态兜底（应用层校验之外）
+   348	UNIQUE WrongBookItem(user_id, word_id)     -- 防重复入本（配合口径 15 upsert）
+   349	UNIQUE GameRecord(idempotency_key) WHERE idempotency_key IS NOT NULL
+   350	UNIQUE ExamRecord(idempotency_key) WHERE idempotency_key IS NOT NULL
+   351	INDEX TypingRecord(user_id, created_at)
+   352	INDEX ExamRecord(user_id, created_at)
+   353	```
+   354	级联/软删策略：删书级联软删章节与词；UserWordStat/WrongBookItem 保留；出题一律 join is_deleted=0；账号清理时物理删除用户及其私有数据。
+   355	## 七、API 概要（v3.1）
+   356	```
+   357	通用：错误 {code, message, detail?}；分页 page/page_size（≤200）
+   358	      幂等头 Idempotency-Key（exam/game）；单题 body.request_id（study/practice/review，D19）
+   359	      user_id 一律取自 JWT，拒绝 body 传入
+   360	认证：POST /api/auth/register | login | logout | password
+   361	      （register 公网+开关开启时必填 invite_code；
+   362	        改密/重置后 pwd_ver+1，旧 token 401〔v3.1〕；logout 仅约定前端删 token）
+   363	管理：GET    /api/admin/users                       （用户列表，含软删状态）
+   364	      POST   /api/admin/users/{id}/reset-password   （D6，随机临时密码一次性展示）
+   365	      POST   /api/admin/users/{id}/restore          （软删 30 天内恢复）
+   366	      GET/POST/PATCH /api/admin/invite-codes        （v3.1 D25 批量生成/列表/停用）
+   367	      GET    /api/admin/devdata/summary             （v3.3 测试数据总览，?user_id= 目标用户）
+   368	      POST   /api/admin/devdata/seed                （v3.3 注入测试数据：高错误率词/高危到期/
+   369	                                                             清活跃/弱指法/打字/游戏记录；
+   370	                                                             body.target_user_id；注入后当日建议缓存失效）
+   371	      POST   /api/admin/devdata/clear               （v3.3 清空目标用户全部学习数据）
+   372	      （v3.3：/api/admin/ai-config 系列已删除，AI 凭据改用户级，见 D29）
+   373	      词库公共管理复用 /api/books 系列（admin 鉴权）
+   374	设置：GET/PUT /api/settings                        （v3.1 D26，部分更新+范围校验；
+   375	                                                    v3.3 增 game_key_sound / advice_engine；
+   376	                                                    v3.5 增 review_show_meaning（D34，0/1 默认 1））
+   377	AI  ：GET/PUT /api/ai-config                       （v3.3 D29 用户自有凭据，key 回显脱敏）
+   378	      POST   /api/ai-config/test                   （v3.3 D29 连通性测试）
+   379	词库：POST   /api/books/import            （multipart；≥1000 行返回 jobId 异步解析）
+   380	      GET    /api/books/import/{jobId}    （轮询状态；完成返回 preview_token）
+   381	      GET    /api/books/import/preview    （?token= 预览统计+错误行明细）
+   382	      POST   /api/books/import/confirm    （?token= + duplicate_strategy）
+   383	      GET    /api/books/{id}/export       （CSV，公式注入转义）
+   384	      POST   /api/books/{id}/clone        （公共库→私有副本）
+   385	      GET/POST/PATCH/DELETE /api/books, /api/chapters, /api/words
+   386	      （词列表支持 ?q= 搜索 + 分页）
+   387	      DELETE /api/books/{id}/chapters           （v3.3 D32 一键清空章节，保留单词）
+   388	      POST   /api/books/{id}/resplit            （v3.3 D32 重新划分单元：
+   389	             ?words_per_chapter= 或 ?unit_count= 二选一，随机分配）
+   390	发音：GET  /api/tts                      （v3.3 匿名音频端点；?text=&accent=us|uk，
+   391	                                         edge-tts 合成 + 磁盘缓存）
+   392	学习：GET  /api/study/next        （续学位置+单词+今日新词剩余额度）
+   393	      POST /api/study/self-rate   （单题，request_id）
+   394	      POST /api/study/dictation   （单题，request_id）
+   395	练习：POST /api/practice/session  （创建，返回题目，组规格 D23）
+   396	      POST /api/practice/answer   （单题实时判分，request_id + detail_json）
+   397	考核：POST /api/exam/start | submit （submit 幂等头 + config 快照）
+   398	复习：GET  /api/review/today      （队列=全部学过词，无额度）
+   399	      POST /api/review/answer     （单题，request_id；自评走 D16 映射）
+   400	游戏：POST /api/game/start       （v3.1 D27：服务端抽词池，生成 session）
+   401	      POST /api/game/submit      （session_id + 逐词日志，服务端校验，幂等头）
+   402	统计：GET  /api/stats/dashboard | trend | calendar
+   403	建议：GET  /api/advice             （D30〔v3.3〕：当日缓存 + note 字段；选 AI 引擎时
+   404	                                   立即返回规则占位、后台生成后前端轮询替换；
+   405	                                   手动刷新限 3 次/日）
+   406	错题：GET/POST/PATCH /api/wrongbook
+   407	导出：GET  /api/export/account     （个人全量数据 CSV 包）
+   408	```
+   409	## 八、开发分期与验收标准
+   410	| 阶段 | 内容 | 验收标准（关键项） |
+   411	|------|------|------------------|
+   412	| P0 | 用户管理（含邀请码 D25、pwd_ver）、词库导入（三步制+异步解析）、学习模式（TTS/续学/默写卡 D17/额度联动）、打字练习（判定+指法引导+localStorage 续练+断网重放 D19）、设置 API（D26） | ① 两用户并发操作数据不串（A/B 交替答题 100 次交叉断言）② GBK CSV 正确导入 ③ 断网后本机恢复练习进度不丢失 ④ 23:50/00:10 学习，连续天数/额度切日正确（D13）⑤ 同书导入重复词被识别（忽略大小写）⑥ 断网期间答题，恢复网络自动重放且不重复计数（D19）〔v3.1〕 ⑦ 改密后旧 token 请求 401（口径 16）〔v3.1〕 |
+   413	| P1 | 熟练度算法（含 D21 streak）、SM-2 循环（含 D11/D16）、错题本（D10+口径 14/15）、已掌握回退（D18）、仪表盘 | ① 答对/答错后 next_review_at 按算法变化；自评设值后首次 next_review_at = +3d/+1d 正确 ② 错词独立计数连对 3 次自动移出；入本前连对不带入计数 ③ 每日额度截断生效，新词/复习互不挤占 ④ 复习答错当日重现一次且仅一次（开关生效）⑤ 复习自评三键按 D16 映射执行（间隔/ease/p 变化正确）〔v3.1〕 ⑥ 已掌握词答错 p<80 → 重新入循环，next=+1d（D18）〔v3.1〕 ⑦ 复习释义开关保存后即时生效：关→默写无释义提示，开→恢复释义显示（D34）〔v3.5〕 |
+   414	| P2 | 考核模式（D20/D22/口径 22）、游戏模式（D27/口径 19） | ① 切屏计入成绩单 ② 改包提交被判无效（耗时 < 词长×40ms 或 word∉session 词池）③ Combo 倍率阶梯（5/10/15/20）与「ceil(得分比 × 时限 × Combo)」计分正确，退格不断/落地断 ④ 近似错误考核按 config 快照计 0.5 分（D20）〔v3.1〕 ⑤ 交卷幂等：重复提交不重复入库 ⑥ 中断未交卷 → 作废无记录 ⑦ 出题池已学优先策略与快照一致（D22）〔v3.1〕 ⑧ 游戏 submit 的 word_id 不在 session 词池时判无效（D27）〔v3.1〕 |
+   415	| P3 | AI 建议（规则版+LetterStat bigram）、打卡成就、排行榜（分组）、导出 | ① 每条建议可一键执行且行为正确，取前 3 优先级固定（口径 20）② 打卡口径：任一模式 1 次提交即打卡，当日实时可见 ③ 排行榜按 difficulty×mode 分组 ④ AI 凭据每用户自有：连通测试可用、key 回显脱敏、调用失败（重试 1 次后）回落规则引擎并展示原因、手动刷新限 3 次/日（D28/D29）〔v3.3〕 ⑤ 选 AI 引擎时仪表盘不阻塞白屏：立即返回规则占位，后台生成后自动替换（D30）〔v3.3〕 ⑥ 全局深色模式：三态切换即时生效，刷新后偏好保持；全站页面（含 Element Plus 组件）深色下无可读性问题；跟随系统模式响应系统主题变化（D33）〔v3.4〕 |
+   416	| P4 | LLM 建议（D29 已落地）、已掌握词重检、TypingRecord 归档、PostgreSQL 迁移 | 视需要启动 |
+   417	## 九、数据隔离专项设计（重点保障）
+   418	- **后端**：无全局用户状态；Repository 基类强制拼接 user_id，禁止裸写过滤 SQL。IdempotencyRecord / GameSession / ImportJob / TypingRecord 等一切查询均过基类过滤（SystemSetting 为全局配置除外）〔v3.1〕
+   419	- **前端**：localStorage 键统一 {userId}: 前缀（含 D12 练习进度、D19 pending 重放队列〔v3.1〕）；登出清空本用户缓存
+   420	- **测试**：P0 并发隔离自动化用例——「用户 A、B 交替答题 100 次，交叉断言各自统计仅自己变化」
+   421	- **日志**：所有写操作带 user_id，串数据 5 分钟内定位请求链
+   422	- **API 层**：user_id 只从 JWT 解析
+   423	## 十、开发期默认口径备忘 〔v3.1 新增〕
+   424	以下为低优先级默认值，开发中可拍板调整，不阻塞定稿：
+   425	1. 章节内单词默认按导入顺序（id 升序）；克隆副本命名「原名-副本」
+   426	2. 导入异步解析前端轮询间隔 2s
+   427	3. admin 重置密码生成随机临时密码一次性展示，提示首次登录改密
+   428	4. 四选一干扰项与正确项释义重复时重新抽取
+   429	5. 游戏词池为空提示「先去学习几个单词」
+   430	6. 限时模式暂停即停表；默写卡展示期可点击跳过
+   431	7. 导出 CSV 的释义/例句渲染一律转义（防 XSS、防公式注入）
+   432	8. 管理端「测试数据调整」面板（devdata）仅供测试环境验证建议/统计触发条件，生产部署建议移除或加开关（v3.3）
+   433	9. 真实词库导入脚本（kajweb/dict NDJSON zip，30 词/Unit）为一次性数据准备工具，不属产品功能（v3.3）
+   434	## 附录 A：单词生命周期状态机（v3.1 更新）
+   435	```
+   436	[新词] --学习自评(D8)--> 设 proficiency, 入 SM-2 循环
+   437	     认识: p=60, next=+3d   模糊: p=30, next=+1d   不认识: p=0, next=+1d(当轮重刷)
+   438	[新词] --学习默写(D17〔v3.1〕)--> 完全正确: p=60,+3d / 近似: p=30,+1d / 错误: p=0,+1d(当轮重刷)
+   439	[循环中: 巩固中/高危遗忘] --每日复习队列-->
+   440	     答对推进间隔 / 答错重置+当日重现(D11) / 近似间隔减半
+   441	     复习形式=自评时按 D16 映射〔v3.1〕: 认识→答对 / 模糊→近似 / 不认识→答错
+   442	[已掌握: p≥80] --> next_review_at=NULL, 退出队列（错题/练习仍可触达统计）
+   443	[已掌握] --任意模式答错致 p<80 (D18〔v3.1〕)--> 回[巩固中]: interval=1d, next=+1d, ease 沿用(下限1.3)
+   444	[已掌握] --P4 可选重检--> 回循环
+   445	```
+   446	## 附录 B：游戏交互协议（D1 落地细则，v3.1 更新）
+   447	```
+   448	0. 开局（D27〔v3.1〕）: POST /api/game/start → 服务端整池洗牌下发（所选范围全部词）→ 生成
+   449	   session（30 分钟有效）；submit 校验 word_id∈池
+   450	1. 键入首字母 → 锁定目标词（优先级：已敲部分 > 未敲；同级取最低者）
+   451	2. 被锁定词冻结下落；其余词继续下落
+   452	3. 敲对：匹配指针 +1；敲错：闪红、指针不动、错误字符入输入串（可退格）
+   453	4. 输入串长度 == 词长 → 自动判定：
+   454	     完全正确 / 近似 → 销毁，得分 = ceil(得分比 × 落地时限 × Combo 倍率)
+   455	                      （落地时限 =(5+0.75×字母数)×难度系数，下限 2s；连对 5→×1.5 / 10→×2.0 / 15→×2.5 / 20→×3.0 上限）
+   456	     不匹配         → 扣血 (1−得分比)×100，该词弹回顶部重下落（Combo 清零）
+   457	5. 任一词触底 → 按已输入正确字符占比计部分分并扣血（Combo 清零）；血量 0 → 结算
+   458	6. 退格：删除末字符，不扣血、不断 Combo，计入准确率分母
+   459	7. 锁定词被消灭/弹回后 → 释放锁定，回到步骤 1
+   460	8. 中断（关页面无结算）〔v3.1〕→ 成绩不入库、不入错题本
+   461	```
+   462	## 附录 C：打字指标口径（v3.1 更新）
+   463	```
+   464	WPM     = 正确字符数 / 5 / 有效输入分钟数
+   465	          有效输入分钟数〔v3.1 口径13〕= 该题首键→末键墙钟时间；
+   466	          默写卡展示期、等待期不计；游戏为整局有效输入时长（暂停剔除）
+   467	准确率   = 正确击键数 / 总击键数（错误击键计入，退格键不计）
+   468	字母延迟 = 相邻 keydown 时间差 → 前端热力图 + TypingRecord.detail_json
+   469	          → LetterStat 聚合（单字母与 bigram 独立成行，D24〔v3.1〕）
+   470	```
+   471	---
+   472	**合并说明（3 处同步回写已完成）**：① D17/D18 已写入附录 A 状态机；② 模块 6 错题本来源补「学习」并写入计数行为；③ P0–P3 验收标准新增 ⑥⑦ ⑧ 项与 D16–D28 对应。文档现在自洽、无交叉矛盾，可直接作为开发依据；如后续评审再触发变更，建议继续沿用 〔v3.x〕 标注方式追加，不重写历史章节。
+   473	
+   474	**v3.3 回写说明**：① D28 由 D29 部分取代（AI 凭据/引擎选择归用户自有），D30–D32 为新增决策；② 数据模型/API/验收标准已同步；③ 前端技术栈按实际落地校正为 Vue 3；④ 其余章节未标注处继续沿用 v3.1/v3.2 决策。
+   475	
+   476	**v3.5 回写说明**：① 新增 D34 复习释义显示开关（设置项 `review_show_meaning`，默认开），已同步版本摘要、模块 8 复习循环、数据模型 DailySetting、API 概要 settings 端点与 P1 验收标准；② 同时回写复习作答卡的实际落地行为：自评/选择形式作答时展示单词拼写与音标，答题反馈区展示正确答案（拼写+音标+释义）。
+   477	

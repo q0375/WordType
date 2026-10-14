@@ -51,7 +51,7 @@ def build_items(
         items.append({
             "type": "keep_going",
             "priority": 9,
-            "message": "今天已经开动了！完成今日新词额度并清掉到期复习，就是漂亮的一天。",
+            "message": "今天已经开动了！继续推进新词并清掉到期复习，就是漂亮的一天。",
             "action": {"type": "study_plan", "params": {"minutes": 10}},
         })
     return items[:3]

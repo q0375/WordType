@@ -5,9 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....db.engine import get_db
 from ....models import User
-from ....schemas import LoginIn, PasswordIn, RegisterIn, SettingsIn
+from ....schemas import LoginIn, NicknameIn, PasswordIn, RegisterIn, SettingsIn
 from ....services import auth_service, misc_service
-from ..deps import get_current_user
+from ..deps import get_current_user, get_token_payload
 
 router = APIRouter()
 
@@ -31,13 +31,25 @@ async def login(payload: LoginIn, request: Request, db: AsyncSession = Depends(g
 
 
 @router.post("/auth/logout", status_code=204)
-async def logout(_: User = Depends(get_current_user)):
+async def logout(payload: dict = Depends(get_token_payload), _: User = Depends(get_current_user)):
+    """登出：把当前 token 的 jti 加入黑名单（单进程内存表，随其过期自动失效）。"""
+    from ....core.security import revoke_token
+
+    revoke_token(payload.get("jti"), payload.get("exp"))
     return Response(status_code=204)
 
 
 @router.post("/auth/password")
 async def change_password(payload: PasswordIn, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     data = await auth_service.change_password(db, user, payload.old_password, payload.new_password)
+    await db.commit()
+    return data
+
+
+@router.post("/auth/nickname")
+async def change_nickname(payload: NicknameIn, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    # 2026-09-22 起用户名不可修改（/auth/username 已移除），昵称是唯一可改的展示名
+    data = await auth_service.change_nickname(db, user, payload.nickname)
     await db.commit()
     return data
 

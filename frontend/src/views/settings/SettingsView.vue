@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
 import PageShell from '../../components/PageShell.vue';
 import { useSettingsStore, AppSettings } from '../../stores/settings';
@@ -8,6 +8,12 @@ import { aiConfigApi } from '../../api';
 const settings = useSettingsStore();
 const form = ref<AppSettings | null>(null);
 const saving = ref(false);
+
+// 游戏下坠时限已固化（ceil(字母数 ÷ 3 ÷ 难度系数)），不再由用户设置
+const fallExample = computed(() => {
+  const t = (n: number, f: number) => Math.max(2, Math.ceil(n / 3 / f));
+  return `10 字母：简单 ${t(10, 0.8)} 秒 / 普通 ${t(10, 1)} 秒 / 困难 ${t(10, 1.25)} 秒`;
+});
 
 // ---- 用户自有 AI（LLM）凭据 ----
 const aiForm = ref({ api_base_url: '', api_key: '', model_name: '', temperature: 0.7, timeout_s: 30 });
@@ -34,7 +40,7 @@ async function save() {
   try {
     const { server_date: _d, server_tz: _t, ...patch } = form.value;
     form.value = await settings.save(patch);
-    ElMessage.success('设置已保存');
+    ElMessage.success({ message: '设置已保存', duration: 2000, showClose: true });
   } finally {
     saving.value = false;
   }
@@ -52,7 +58,7 @@ async function saveAI() {
     const { data } = await aiConfigApi.put(patch);
     aiMasked.value = data.api_key_masked || '';
     aiForm.value.api_key = '';
-    ElMessage.success('AI 模型配置已保存（仅本人可用，key 加密存储）');
+    ElMessage.success({ message: 'AI 模型配置已保存（仅本人可用，key 加密存储）', duration: 2000, showClose: true });
   } finally {
     aiSaving.value = false;
   }
@@ -64,29 +70,19 @@ async function testAI() {
 </script>
 
 <template>
-  <PageShell title="设置" subtitle="每日额度 · 判定 · 复习形式 · 游戏/考核">
+  <PageShell title="设置" subtitle="判定 · 复习形式 · 游戏/考核">
     <el-card v-if="form" shadow="never" class="cfg">
       <el-form label-width="180px">
-        <el-divider content-position="left">每日额度</el-divider>
-        <el-form-item label="每日新词上限（0–100）">
-          <el-input-number v-model="form.daily_new_limit" :min="0" :max="100" />
-        </el-form-item>
-        <el-form-item label="每日复习上限（0–500）">
-          <el-input-number v-model="form.daily_review_limit" :min="0" :max="500" />
-        </el-form-item>
-
         <el-divider content-position="left">判定与练习</el-divider>
-        <el-form-item label="宽松判定（Levenshtein ≤1 判近似）">
-          <el-switch v-model="form.loose_match" :active-value="1" :inactive-value="0" />
-        </el-form-item>
         <el-form-item label="指法引导">
           <el-switch v-model="form.typing_guide_on" :active-value="1" :inactive-value="0" />
         </el-form-item>
         <el-form-item label="TTS 发音">
           <el-switch v-model="form.tts_on" :active-value="1" :inactive-value="0" />
         </el-form-item>
-        <el-form-item label="练习组规格（10–50）">
-          <el-input-number v-model="form.practice_group_size" :min="10" :max="50" />
+        <el-form-item label="练习组规格（1–9999）">
+          <el-input-number v-model="form.practice_group_size" :min="1" :max="9999" />
+          <span class="field-hint">设大即不设限：超过所选单词数时，每词每种题型最多一题，实际题数取决于单词数</span>
         </el-form-item>
 
         <el-divider content-position="left">复习</el-divider>
@@ -106,17 +102,18 @@ async function testAI() {
         </el-form-item>
 
         <el-divider content-position="left">学习卡 / 游戏 / 考核</el-divider>
-        <el-form-item label="默写卡展示秒数（2–5）">
-          <el-input-number v-model="form.dictation_show_seconds" :min="2" :max="5" />
-        </el-form-item>
         <el-form-item label="考核限时（分钟，5–120）">
           <el-input-number v-model="form.exam_time_limit" :min="5" :max="120" />
         </el-form-item>
         <el-form-item label="考核及格线">
           <el-input-number v-model="form.exam_pass_score" :min="0" :max="100" />
         </el-form-item>
-        <el-form-item label="考核宽松判定">
-          <el-switch v-model="form.exam_loose_match" :active-value="1" :inactive-value="0" />
+        <el-form-item label="游戏下坠时限">
+          <span class="field-hint" style="margin-left: 0">
+            已固定：时限 = ceil(字母数 ÷ 3 ÷ 难度系数)，难度系数 简单 0.8 / 普通 1.0 / 困难 1.25（系数越大时限越短）<br />
+            参考：{{ fallExample }}。单词得分 = ceil(得分比 × 时限 × 连击倍率)，得分比 = 词序相似度（difflib 算法，区分大小写、空格参与比较）；
+            词库导入的「时限秒」仅用于考核打字题限时，不影响游戏下坠
+          </span>
         </el-form-item>
         <el-form-item label="游戏按键音效">
           <el-switch v-model="form.game_key_sound" :active-value="1" :inactive-value="0" />

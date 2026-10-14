@@ -38,7 +38,10 @@ function goBack() {
 
 <style scoped>
 .page-shell {
-  min-height: 100vh;
+  /* 扣掉顶栏高度：顶栏 sticky 仍占文档流，若这里用 100vh 则总高恒为 100vh+60px，
+     内容再少也能滚一段、页面标题被顶栏压住。内容超出时仍能正常滚动 */
+  min-height: calc(100vh - var(--wt-nav-h, 60px));
+  min-height: calc(100dvh - var(--wt-nav-h, 60px));
   background: var(--wt-bg);
 }
 .page-main {

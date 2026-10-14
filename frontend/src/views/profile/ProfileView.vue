@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import PageShell from '../../components/PageShell.vue';
@@ -14,18 +14,32 @@ const stats = ref<any>(null);
 
 async function changePassword() {
   if (pwd.value.new_password !== pwd.value.confirm) {
-    ElMessage.warning('两次输入的新密码不一致');
+    ElMessage.warning({ message: '两次输入的新密码不一致', duration: 2000, showClose: true });
     return;
   }
   if (pwd.value.new_password.length < 8 || !/[a-zA-Z]/.test(pwd.value.new_password) || !/\d/.test(pwd.value.new_password)) {
-    ElMessage.warning('密码需至少 8 位且同时包含字母与数字');
+    ElMessage.warning({ message: '密码需至少 8 位且同时包含字母与数字', duration: 2000, showClose: true });
     return;
   }
   // 改密响应签发新 token（口径16）：当前会话无感续用，其他设备全部失效
   const { data } = await authApi.changePassword(pwd.value.old_password, pwd.value.new_password);
   auth.setSession(data.token, data.user);
   pwd.value = { old_password: '', new_password: '', confirm: '' };
-  ElMessage.success('密码已修改，其他设备已强制下线');
+  ElMessage.success({ message: '密码已修改，其他设备已强制下线', duration: 2000, showClose: true });
+}
+
+async function editNickname() {
+  // 2026-09-22：用户名注册后不可修改，昵称是唯一可改的展示名（导航栏等处展示）
+  const { value } = await ElMessageBox.prompt('昵称（1~20 个字符，展示用）', '修改昵称', {
+    inputValue: auth.user?.nickname || auth.user?.username,
+    inputPattern: /^\S.{0,19}$/,
+    inputErrorMessage: '昵称需 1~20 个字符',
+  });
+  const nick = (value || '').trim();
+  if (!nick || nick === (auth.user?.nickname || '')) return;
+  const { data } = await authApi.changeNickname(nick);
+  auth.setSession(data.token, data.user);
+  ElMessage.success({ message: '昵称已修改', duration: 2000, showClose: true });
 }
 
 async function deactivate() {
@@ -35,6 +49,28 @@ async function deactivate() {
   router.push('/login');
 }
 
+const exporting = ref(false);
+
+async function exportMyData() {
+  exporting.value = true;
+  try {
+    // blob 下载：走 axios 拦截器附带 token（<a href> 导航带不上认证头，后端 401）
+    const res = await exportApi.account();
+    const url = URL.createObjectURL(res.data);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'wordtype-account.zip';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // 不能同步 revoke：Chromium 下载启动与 blob 回收存在竞态，会取消下载
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    ElMessage.success({ message: '导出成功', duration: 2000, showClose: true });
+  } finally {
+    exporting.value = false;
+  }
+}
+
 onMounted(async () => {
   const { data } = await http.get('/stats/dashboard');
   stats.value = data;
@@ -42,11 +78,12 @@ onMounted(async () => {
 </script>
 
 <template>
-  <PageShell title="个人中心" subtitle="改密 · 数据导出 · 注销">
+  <PageShell title="个人中心" subtitle="昵称 · 改密 · 数据导出 · 注销">
     <div class="grid">
       <el-card shadow="never">
         <template #header><span>账号信息</span></template>
-        <p>用户名：<b>{{ auth.user?.username }}</b></p>
+        <p>用户名：<b>{{ auth.user?.username }}</b> <span class="muted">（注册后不可修改）</span></p>
+        <p>昵称：<b>{{ auth.user?.nickname || auth.user?.username }}</b> <el-button link type="primary" size="small" @click="editNickname">修改</el-button></p>
         <p>角色：<el-tag size="small" :type="auth.isAdmin ? 'warning' : 'info'">{{ auth.user?.role }}</el-tag></p>
         <p v-if="stats" class="muted">
           累计新学 {{ stats.today.new_learned }}（今日） · 连续打卡 {{ stats.today.streak_days }} 天 · 本周 WPM {{ stats.week_wpm }}
@@ -72,9 +109,7 @@ onMounted(async () => {
       <el-card shadow="never">
         <template #header><span>数据与注销</span></template>
         <p class="muted">导出个人全量数据（ZIP：学习统计 / 打字记录 / 打卡 / 考核 / 游戏 / 错题本 CSV）。</p>
-        <a :href="exportApi.accountUrl" target="_blank">
-          <el-button type="primary">导出我的数据</el-button>
-        </a>
+        <el-button type="primary" :loading="exporting" @click="exportMyData">导出我的数据</el-button>
         <el-divider />
         <p class="muted">注销为软删除，30 天后定时任务物理清理（含私有词库与全部统计）。</p>
         <el-button type="danger" @click="deactivate">注销账号</el-button>

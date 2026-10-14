@@ -26,3 +26,11 @@ backend/*.db
 
 # Deploy archive (contains backend/.env secrets)
 wordtype-deploy.tar.gz
+
+# Root server migration snapshot: 75MB prod DB + real .env (secrets), must NOT be tracked
+backup/
+*.tar.gz
+*.tmp
+
+# Vite cache
+.vite/

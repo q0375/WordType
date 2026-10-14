@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 
 from sqlalchemy import text, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.errors import AppError
@@ -19,10 +20,23 @@ async def get_or_create_stat(db: AsyncSession, user_id: int, word_id: int) -> tu
     ).scalar_one_or_none()
     if row:
         return row, False
-    row = UserWordStat(user_id=user_id, word_id=word_id)
-    db.add(row)
-    await db.flush()
-    return row, True
+    # 并发兜底：同一词的两个请求同时到达（如快速连按自评）时，双方都查不到、都插入，
+    # 后者会撞 UNIQUE(user_id, word_id)。用 SAVEPOINT 只回滚本次插入、复用对方已插入的行，
+    # 避免整个请求 500（外层事务中已做的其他写入不受影响）。
+    new_row = UserWordStat(user_id=user_id, word_id=word_id)
+    try:
+        async with db.begin_nested():
+            db.add(new_row)
+    except IntegrityError:
+        row = (
+            await db.execute(
+                select(UserWordStat).where(UserWordStat.user_id == user_id, UserWordStat.word_id == word_id)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise
+        return row, False
+    return new_row, True
 
 
 async def get_word(db: AsyncSession, word_id: int) -> Word:
@@ -127,6 +141,17 @@ async def touch_daily(
 
 def now_ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def word_wpm(spelling: str, duration_ms: int) -> float | None:
+    """单词级打字速度 WPM（标准口径：5 字符 = 1 词）。
+
+    duration_ms < 300 视为无效（误触；选择/自评题无打字不计）；上限 250 防瞬时异常值。
+    2026-09-23 新增：此前 typing_record.wpm/accuracy 全产品无写入点，统计趋势/周均 WPM 恒空。
+    """
+    if not duration_ms or duration_ms < 300:
+        return None
+    return round(min((len(spelling) / 5) / (duration_ms / 60000), 250.0), 1)
 
 
 def parse_detail(detail: dict | None) -> dict:

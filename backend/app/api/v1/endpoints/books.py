@@ -1,6 +1,6 @@
 """词库端点：books / chapters / words / 导入三步制 / 导出。"""
 
-from fastapi import APIRouter, Depends, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, Form, Request, Response, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....core.errors import AppError
@@ -28,7 +28,7 @@ async def create_book(payload: BookIn, user: User = Depends(get_current_user), d
 
 @router.patch("/books/{book_id}", status_code=204)
 async def patch_book(book_id: int, payload: BookPatchIn, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    await books_service.patch_book(db, user, book_id, payload.name)
+    await books_service.patch_book(db, user, book_id, payload.name, payload.is_public)
     await db.commit()
     return Response(status_code=204)
 
@@ -49,14 +49,19 @@ async def clone_book(book_id: int, user: User = Depends(get_current_user), db: A
 
 @router.get("/books/{book_id}/export")
 async def export_book(book_id: int, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from urllib.parse import quote
+
     book = await books_service.get_book_scoped(db, user, book_id)
     csv_text = await books_service.export_book_csv(db, book_id)
     await db.commit()
     filename = f"{book.name}.csv"
+    # RFC 5987：filename* 必须百分号编码（纯中文名 ascii 过滤后会只剩扩展名）；
+    # 另给一个 ASCII 兜底 filename=，兼容老客户端。
+    disposition = f"attachment; filename=\"export.csv\"; filename*=UTF-8''{quote(filename)}"
     return Response(
         content=csv_text.encode("utf-8"),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename.encode('ascii', 'ignore').decode() or 'export.csv'}"},
+        headers={"Content-Disposition": disposition},
     )
 
 
@@ -141,16 +146,11 @@ async def delete_word(word_id: int, user: User = Depends(get_current_user), db: 
 # ---------- 导入三步制 ----------
 
 @router.post("/books/import")
-async def upload_import(request: Request, file: UploadFile, book_name: str | None = None, target_book_id: int | None = None,
+async def upload_import(request: Request, file: UploadFile, book_name: str | None = Form(None), target_book_id: int | None = Form(None),
                         user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     data = await books_service.upload_import(db, user, file, book_name, target_book_id)
     await db.commit()
     return data
-
-
-@router.get("/books/import/{job_id}")
-async def get_import_job(job_id: int, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    return await books_service.get_import_job(db, user, job_id)
 
 
 @router.get("/books/import/preview")
@@ -158,16 +158,24 @@ async def import_preview(token: str, user: User = Depends(get_current_user), db:
     return await books_service.import_preview(db, user, token)
 
 
+@router.get("/books/import/{job_id}")
+async def get_import_job(job_id: int, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    return await books_service.get_import_job(db, user, job_id)
+
+
 @router.post("/books/import/confirm", status_code=201)
 async def import_confirm(token: str, duplicate_strategy: str = "skip", words_per_chapter: int | None = None,
                          unit_count: int | None = None,
+                         unit_mode: str | None = None,  # file=按文件单元列 / size / count / none
                          user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if unit_mode not in (None, "file", "size", "count", "none"):
+        raise AppError("VALIDATION_ERROR", "单元策略取值只能是 file/size/count/none")
     if words_per_chapter is not None and not (5 <= words_per_chapter <= 200):
         raise AppError("VALIDATION_ERROR", "每单元词数需在 5–200 之间")
     if unit_count is not None and not (2 <= unit_count <= 500):
         raise AppError("VALIDATION_ERROR", "单元数量需在 2–500 之间")
     if words_per_chapter and unit_count:
         raise AppError("VALIDATION_ERROR", "每单元词数与单元数量只能二选一")
-    data = await books_service.import_confirm(db, user, token, duplicate_strategy, words_per_chapter, unit_count)
+    data = await books_service.import_confirm(db, user, token, duplicate_strategy, words_per_chapter, unit_count, unit_mode)
     await db.commit()
     return data

@@ -31,10 +31,15 @@ class User(Base):
     username: Mapped[str] = mapped_column(Text, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False, default="user")
+    class_id: Mapped[int | None] = mapped_column(Integer)  # 所属班级；NULL 表示未分配（语义上归默认班级）
     pwd_ver: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_deleted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     deleted_at: Mapped[str | None] = mapped_column(Text)
     last_login_at: Mapped[str | None] = mapped_column(Text)
+    # 昵称（2026-09-22）：用户唯一可自行修改的展示名，NULL 时回落显示用户名；用户名注册后不可改
+    nickname: Mapped[str | None] = mapped_column(Text)
+    # 最后活跃时间（2026-09-22）：认证请求节流（≥60s）刷新，管理端据此显示在线状态（5 分钟内视为在线）
+    last_seen_at: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text, nullable=False, default=now_str)
 
 
@@ -56,8 +61,8 @@ class InviteCode(Base):
 class DailySetting(Base):
     __tablename__ = "daily_setting"
     user_id: Mapped[int] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), primary_key=True)
-    daily_new_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
-    daily_review_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    daily_new_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=20)  # 历史列：学习已取消每日新词上限，保留只为免重建线上表
+    daily_review_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=100)  # 历史列：复习已取消每日上限（2026-09-23），队列全量物化，保留只为免重建线上表
     loose_match: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     typing_guide_on: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     tts_on: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -67,6 +72,9 @@ class DailySetting(Base):
     game_difficulty: Mapped[str] = mapped_column(Text, nullable=False, default="normal")
     game_limited_mode: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     game_key_sound: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    game_fall_mode: Mapped[int] = mapped_column(Integer, nullable=False, default=1)  # 1=按词长加时 0=跟随难度固定速度
+    game_fall_base: Mapped[int] = mapped_column(Integer, nullable=False, default=8)  # 按词长加时：基准秒
+    game_fall_per_char: Mapped[int] = mapped_column(Integer, nullable=False, default=6)  # 每字母加时，0.1 秒为单位（6=0.6s）
     advice_engine: Mapped[str] = mapped_column(Text, nullable=False, default="rule")  # rule=规则引擎 / llm=AI 模型（用户自选）
     exam_time_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     exam_pass_score: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
@@ -111,6 +119,7 @@ class Word(Base):
     meaning: Mapped[str] = mapped_column(Text, nullable=False)
     phonetic: Mapped[str | None] = mapped_column(Text)
     example: Mapped[str | None] = mapped_column(Text)
+    time_limit_s: Mapped[int | None] = mapped_column(Integer)  # 管理员设置的打字题基础秒数；NULL = 自动（5+0.75×词长）
     is_deleted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     deleted_at: Mapped[str | None] = mapped_column(Text)
     deleted_by: Mapped[int | None] = mapped_column(ForeignKey("user.id", ondelete="SET NULL"))
@@ -237,6 +246,11 @@ class GameRecord(Base):
     wpm: Mapped[float | None] = mapped_column(Float)
     difficulty: Mapped[str] = mapped_column(Text, nullable=False)
     mode: Mapped[str] = mapped_column(Text, nullable=False)
+    # 排行榜分组维度：词库 + 章节（NULL=整本词库）+ 章节集合键（2026-09-23：多选章节按集合分组）
+    book_id: Mapped[int | None] = mapped_column(Integer)
+    chapter_id: Mapped[int | None] = mapped_column(Integer)
+    # 排行榜分组键：所选章节集合规范化（升序去重逗号串，如 "501,502"）；NULL=整本词库（含全选/不选）
+    chapter_key: Mapped[str | None] = mapped_column(Text)
     is_valid: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     idempotency_key: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text, nullable=False, default=now_str)
@@ -250,6 +264,8 @@ class ExamPaper(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), nullable=False)
     chapter_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    template_id: Mapped[int | None] = mapped_column(Integer)  # 来源考核卷模板（自组卷为 NULL）
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="self")  # self=自组卷 / template=考核卷
     config_json: Mapped[str] = mapped_column(Text, nullable=False)
     questions_json: Mapped[str] = mapped_column(Text, nullable=False)
     answer_key_json: Mapped[str] = mapped_column(Text, nullable=False)
@@ -258,6 +274,49 @@ class ExamPaper(Base):
     started_at: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[str] = mapped_column(Text, nullable=False)
     submitted_at: Mapped[str | None] = mapped_column(Text)
+
+
+class StudyClass(Base):
+    """班级。默认班级固定存在（is_default=1），未分配用户语义上归默认班级。"""
+
+    __tablename__ = "study_class"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    is_default: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[int | None] = mapped_column(Integer)  # 创建管理员
+    created_at: Mapped[str] = mapped_column(Text, nullable=False, default=now_str)
+
+
+class ExamTemplate(Base):
+    """考核卷（管理员定义）：创建时固定组卷，所有参与者题目完全一致。"""
+
+    __tablename__ = "exam_template"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    chapter_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    config_json: Mapped[str] = mapped_column(Text, nullable=False)
+    questions_json: Mapped[str] = mapped_column(Text, nullable=False)
+    answer_key_json: Mapped[str] = mapped_column(Text, nullable=False)
+    question_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[int] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), nullable=False)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False, default=now_str)
+
+
+class ClassPaperAssign(Base):
+    """班级-考核卷分配：available_at 到时自动对该班启用，expires_at 过后截止（可空=不截止）。"""
+
+    __tablename__ = "class_paper_assign"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    template_id: Mapped[int] = mapped_column(ForeignKey("exam_template.id", ondelete="CASCADE"), nullable=False)
+    class_id: Mapped[int] = mapped_column(ForeignKey("study_class.id", ondelete="CASCADE"), nullable=False)
+    available_at: Mapped[str | None] = mapped_column(Text)  # NULL = 立即生效
+    expires_at: Mapped[str | None] = mapped_column(Text)  # NULL = 不截止
+    max_attempts: Mapped[int | None] = mapped_column(Integer)  # NULL = 不限次数；否则每人最多可交卷 N 次
+    created_at: Mapped[str] = mapped_column(Text, nullable=False, default=now_str)
+
+
+Index("idx_assign_read", ClassPaperAssign.class_id, ClassPaperAssign.template_id, unique=True)
 
 
 class ReviewQueue(Base):
@@ -308,6 +367,11 @@ class GameSession(Base):
     word_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
     difficulty: Mapped[str] = mapped_column(Text, nullable=False)
     mode: Mapped[str] = mapped_column(Text, nullable=False)
+    # 结算时回写进 GameRecord，供排行榜分组（不可由客户端在 submit 时伪造）
+    book_id: Mapped[int | None] = mapped_column(Integer)
+    chapter_id: Mapped[int | None] = mapped_column(Integer)
+    # 开局快照的章节集合键（规范化同 GameRecord.chapter_key；NULL=整本）
+    chapter_key: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
     created_at: Mapped[str] = mapped_column(Text, nullable=False, default=now_str)
     expires_at: Mapped[str] = mapped_column(Text, nullable=False)

@@ -55,7 +55,7 @@ async function doReplay(items: QueueItem[]) {
     } catch (e: any) {
       if (e?.status >= 400 && e?.status < 500) {
         // 4xx 业务错 → 剔除 + 提示
-        ElMessage.warning(`有 ${items.length} 条离线作答未能同步：额度或状态已变化`);
+        ElMessage.warning({ message: `有 ${items.length} 条离线作答未能同步：额度或状态已变化`, duration: 2000, showClose: true });
       } else {
         remain.push(item); // 网络错误 → 保留
       }

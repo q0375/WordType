@@ -14,7 +14,7 @@ from ..models import DailySetting, InviteCode, User
 def auth_payload(user: User) -> dict:
     return {
         "token": create_token(user.id, user.username, user.role, user.pwd_ver),
-        "user": {"id": user.id, "username": user.username, "role": user.role},
+        "user": {"id": user.id, "username": user.username, "nickname": user.nickname, "role": user.role},
     }
 
 
@@ -46,7 +46,15 @@ async def register(db: AsyncSession, username: str, password: str, invite_code: 
                 detail = [{"field": "invite_code", "issue": "invalid"}]
             raise AppError("INVITE_CODE_INVALID", "邀请码无效", detail)
 
-    user = User(username=username, password_hash=hash_password(password), role="user")
+    # 新用户默认归入「默认班级」（不存在则当场补建，保证班级外键语义完整）
+    from ..models import StudyClass
+
+    default_cls = (await db.execute(select(StudyClass).where(StudyClass.is_default == 1))).scalars().first()
+    if default_cls is None:
+        default_cls = StudyClass(name="默认班级", is_default=1)
+        db.add(default_cls)
+        await db.flush()
+    user = User(username=username, password_hash=await hash_password(password), role="user", class_id=default_cls.id)
     db.add(user)
     await db.flush()
 
@@ -73,21 +81,35 @@ async def register(db: AsyncSession, username: str, password: str, invite_code: 
 
 
 async def login(db: AsyncSession, username: str, password: str, ip: str) -> dict:
+    # 已达锁定直接拒绝（对存在/不存在的用户名一视同仁，不泄露账号是否存在）
+    if not ratelimit.login_allowed(username, ip):
+        raise AppError("RATE_LIMITED", "登录尝试过于频繁，请稍后再试")
     user = await get_user_by_name(db, username)
     # 失败锁定不改响应（防探测），仅计数
-    if user is None or not verify_password(password, user.password_hash):
+    if user is None or not await verify_password(password, user.password_hash):
         ratelimit.login_failed(username, ip)
         raise AppError("AUTH_INVALID", "用户名或密码错误")
     if user.is_deleted:
         raise AppError("AUTH_DEACTIVATED", "账号已注销，30 天内可联系管理员恢复")
+    ratelimit.login_succeeded(username, ip)
     user.last_login_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return auth_payload(user)
 
 
 async def change_password(db: AsyncSession, user: User, old_password: str, new_password: str) -> dict:
-    if not verify_password(old_password, user.password_hash):
+    if not await verify_password(old_password, user.password_hash):
         raise AppError("AUTH_INVALID", "旧密码错误")
-    user.password_hash = hash_password(new_password)
+    user.password_hash = await hash_password(new_password)
     user.pwd_ver += 1
     await db.flush()
     return auth_payload(user)  # 响应签发新 token（口径16）
+
+
+async def change_nickname(db: AsyncSession, user: User, nickname: str) -> dict:
+    """昵称 = 用户唯一可自行修改的展示名（2026-09-22 起用户名不可修改）。
+
+    昵称不参与 token 签发，无需 pwd_ver 作废旧会话。
+    """
+    user.nickname = nickname.strip()
+    await db.flush()
+    return auth_payload(user)

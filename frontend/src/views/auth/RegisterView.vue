@@ -14,26 +14,30 @@ const loading = ref(false);
 
 async function submit() {
   if (!/^[a-zA-Z0-9_\u4e00-\u9fa5]{3,20}$/.test(form.value.username)) {
-    ElMessage.warning('用户名需为 3-20 位字母/数字/下划线/中文');
+    ElMessage.warning({ message: '用户名需为 3-20 位字母/数字/下划线/中文', duration: 2000, showClose: true });
     return;
   }
   if (form.value.password.length < 8 || !/[a-zA-Z]/.test(form.value.password) || !/\d/.test(form.value.password)) {
-    ElMessage.warning('密码需至少 8 位且同时包含字母与数字');
+    ElMessage.warning({ message: '密码需至少 8 位且同时包含字母与数字', duration: 2000, showClose: true });
     return;
   }
   if (form.value.password !== form.value.confirm) {
-    ElMessage.warning('两次输入的密码不一致');
+    ElMessage.warning({ message: '两次输入的密码不一致', duration: 2000, showClose: true });
+    return;
+  }
+  if (!form.value.invite_code.trim()) {
+    ElMessage.warning({ message: '请填写邀请码（请联系管理员获取）', duration: 2000, showClose: true });
     return;
   }
   loading.value = true;
   try {
-    const { data } = await authApi.register(form.value.username, form.value.password, form.value.invite_code || undefined);
+    const { data } = await authApi.register(form.value.username, form.value.password, form.value.invite_code.trim());
     auth.setSession(data.token, data.user);
-    ElMessage.success('注册成功');
+    ElMessage.success({ message: '注册成功', duration: 2000, showClose: true });
     router.push('/');
   } catch (e) {
     if (e instanceof ApiError && e.code === 'INVITE_CODE_INVALID') {
-      ElMessage.error('邀请码无效、已使用或已过期');
+      ElMessage.error({ message: '邀请码无效、已使用或已过期', duration: 2000, showClose: true });
     }
   } finally {
     loading.value = false;
@@ -59,7 +63,7 @@ async function submit() {
           <el-input v-model="form.confirm" type="password" show-password placeholder="再次输入密码" />
         </el-form-item>
         <el-form-item label="邀请码">
-          <el-input v-model="form.invite_code" placeholder="选填" />
+          <el-input v-model="form.invite_code" placeholder="必填，一码仅可注册一个账号" />
         </el-form-item>
         <el-button type="primary" class="submit-btn" :loading="loading" native-type="submit">注册</el-button>
       </el-form>

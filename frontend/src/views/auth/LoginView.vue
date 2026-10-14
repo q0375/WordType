@@ -14,15 +14,17 @@ const loading = ref(false);
 
 async function submit() {
   if (!form.value.username || !form.value.password) {
-    ElMessage.warning('请输入用户名和密码');
+    ElMessage.warning({ message: '请输入用户名和密码', duration: 2000, showClose: true });
     return;
   }
   loading.value = true;
   try {
     const { data } = await authApi.login(form.value.username, form.value.password);
     auth.setSession(data.token, data.user);
-    ElMessage.success('登录成功');
+    ElMessage.success({ message: '登录成功', duration: 2000, showClose: true });
     router.push((route.query.redirect as string) || '/');
+  } catch (e: any) {
+    ElMessage.error({ message: e?.message || '登录失败，请稍后重试', duration: 2000, showClose: true });
   } finally {
     loading.value = false;
   }
@@ -45,6 +47,7 @@ async function submit() {
           <el-input v-model="form.password" type="password" show-password placeholder="密码" @keyup.enter="submit" />
         </el-form-item>
         <el-button type="primary" class="submit-btn" :loading="loading" native-type="submit">登录</el-button>
+        <p class="forgot-tip">忘记密码？请联系管理员重置，重置后请用临时密码登录并尽快修改。</p>
       </el-form>
       <div class="auth-links">
         <router-link to="/register">没有账号？去注册</router-link>
@@ -55,6 +58,12 @@ async function submit() {
 </template>
 
 <style scoped>
+.forgot-tip {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--wt-text-3);
+  text-align: center;
+}
 .auth-wrap {
   min-height: 100vh;
   display: flex;

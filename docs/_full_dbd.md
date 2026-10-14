@@ -251,7 +251,7 @@
    251	  created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
    252	);
    253	CREATE UNIQUE INDEX uq_game_idem ON game_record(idempotency_key) WHERE idempotency_key IS NOT NULL;
-   254	CREATE INDEX idx_game_rank ON game_record(difficulty, mode, score DESC) WHERE is_valid = 1;
+   254	CREATE INDEX idx_game_rank ON game_record(difficulty, mode, score DESC) WHERE is_valid = 1;   -- v3.6+：game_record/game_session 另有 book_id、chapter_id、chapter_key 列（2026-09-23 章节集合分组键：NULL=整本榜，"501,502"=组合专属榜；历史单章局 chapter_key 已回填单元素键）
    255	```
    256	### 2.5 会话与幂等域（含 DBD 新增表）
    257	```sql
@@ -271,7 +271,7 @@
    271	  submitted_at    TEXT
    272	);
    273	CREATE INDEX idx_paper_user ON exam_paper(user_id, status);
-   274	-- 〔DBD新增 T2〕当日复习队列物化：D11重现一次、额度截断、溢出排序的落库依据
+   274	-- 〔DBD新增 T2〕当日复习队列物化：D11重现一次、全量物化、逾期优先排序的落库依据
    275	CREATE TABLE review_queue (
    276	  id           INTEGER PRIMARY KEY,
    277	  user_id      INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
@@ -370,10 +370,10 @@
    370	| 学习·自评（认识/模糊/不认识） | S: p=60/30/0，interval=3/1/1，next=+3d/+1d/+1d，streak=0 | —（无打字） | —（自评不入本） | ＋1 行或 Δ：new_count+1 | — | study_progress Δ |
    371	| 学习·默写 对/近似/错 | 同上三档（D17 映射），streak=0 | ＋ | 错→入本/归零；近似→不动（N1） | new+1；correct+1 或 wrong+1 | — | TypingRecord(source=study) |
    372	| 练习·答题 对/近似/错 | Δ p 与计数（§4.2）＋sync_lifecycle | ＋ | 对→conquer+1；错→入本/归零；近似→不动（N1） | correct/wrong+1 | — | 30s 写 localStorage（D12）不落库 |
-   373	| 复习·打字/选择 对/近似/错 | Δ 全量 SM-2（§4.2）＋sync_lifecycle | ＋ | 同练习行 | review+1；correct/wrong+1 | 当前行 status=done；错且 D11 开→＋重现行 | 额度=review_count 校验 |
+   373	| 复习·打字/选择 对/近似/错 | Δ 全量 SM-2（§4.2）＋sync_lifecycle | ＋ | 同练习行 | review+1；correct/wrong+1 | 当前行 status=done；错且 D11 开→＋重现行 | 无额度校验（2026-09-23 起） |
    374	| 复习·自评（D16） | 按映射三态同上 | —（无打字） | 同对应判定态 | review+1（打卡） | 同上 | — |
    375	| 考核·交卷（批量 N 题） | Δ 每题增量（循环内批量）＋sync_lifecycle | ＋×N（source=exam，result=逐题） | 同练习行（批量） | 批量 correct/wrong 累加 | — | exam_paper：status=submitted、blur_count 定格 → exam_record ＋；idempotency_record ＋ |
-   376	| 游戏·结算（批量逐词） | Δ 每词：销毁(含宽松)→对；弹回/落地→错；＋sync_lifecycle | —（逐词日志不落库，v3.1） | 错词批量入本/归零 | 批量 correct/wrong 累加 | — | game_session：status=settled → game_record ＋；idempotency_record ＋ |
+   376	| 游戏·结算（批量逐词） | Δ 每词：销毁(含宽松)→对；弹回/落地→错；＋sync_lifecycle | —（逐词日志不落库，v3.1） | 错词批量入本/归零（2026-10-03：主动放弃的词 destroyed=false 且 landed=false 不入本） | 批量 correct/wrong 累加 | — | game_session：status=settled → game_record ＋；idempotency_record ＋ |
    377	| 导入·确认 | — | — | — | — | — | word 批量＋；import_job status=confirmed |
    378	| 改密/管理员重置 | — | — | — | — | — | user：pwd_ver+1（口径16） |
    379	| 注册（邀请码开启） | — | — | — | — | — | invite_code：used_by/used_at 原子核销（§4.4） |
@@ -438,12 +438,12 @@
    438	| 游戏结算 | 校验 session（未 settled、word∈池、耗时）→ game_record → stat 批量 → wrongbook 批量 → daily 批量 → session.status=settled | 同上；session 单向状态机 |
    439	| 导入确认 | 载入 parsed_json → 分批 INSERT word（每批 500，整事务）→ 跳过/覆盖 → 报告文件 → job.status=confirmed | `uq_word_book_spelling` 兜底竞态；覆盖仅 UPDATE meaning/phonetic/example（口径17） |
    440	| 注册核销 | `UPDATE invite_code SET used_by=?, used_at=? WHERE code=? AND is_active=1 AND used_by IS NULL AND expires_at>:now` → rowcount=1 才建用户 | 单语句原子核销，防一码多用 |
-   441	| 队列物化 | BEGIN IMMEDIATE → 额度计算 → INSERT …（幂等，NOT EXISTS 防重复）→ 提交 | `uq_rq` 唯一索引防双端同时物化 |
+   441	| 队列物化 | BEGIN IMMEDIATE → 全量 SELECT 学过词 → INSERT …（幂等，NOT EXISTS 防重复）→ 提交 | `uq_rq` 唯一索引防双端同时物化 |
    442	### 4.5 DailyActivity 计数触发细则（口径21 落地）
    443	| 计数 | 触发条件 | 说明 |
    444	|---|---|---|
    445	| new_count | 学习自评/默写完成且**本次新建了 stat 行** | 重学/复习不计数；额度校验读此列 |
-   446	| review_count | 复习每完成 1 题（含 D11 重现题） | 额度校验：limit − review_count − 队列 pending 数 |
+   446	| review_count | 复习每完成 1 题（含 D11 重现题） | 仅统计用途（2026-09-23 起复习无额度） |
    447	| correct_count | 任意模式 result=correct（含考核/游戏批量折算） | 自评不计（非判定） |
    448	| wrong_count | 任意模式 result∈{near, wrong}（N2） | 自评不计 |
    449	| 打卡 | 上表任一 upsert 发生即当日行存在 | 04:00 对账仅校准（§4.6） |
@@ -461,15 +461,15 @@
    461	### 4.7 读路径（高频 SQL 骨架）
    462	**① 复习队列物化（GET /review/today，幂等可重入）**
    463	```sql
-   464	-- 剩余额度 = limit − 今日review_count − 队列pending数（应用层算）
+   464	-- 无额度上限（2026-09-23）：全部学过的词全量物化（含 next_review_at IS NULL 的已掌握词）
    465	INSERT INTO review_queue (user_id, date, word_id, tier, overdue_days)
    466	SELECT :uid, :today, s.word_id,
    467	       CASE WHEN s.next_review_at < :today THEN 0
    468	            WHEN s.proficiency < 40 THEN 1 ELSE 2 END,
-   469	       MAX(0, CAST(julianday(:today) - julianday(s.next_review_at) AS INTEGER))
+   469	       MAX(0, CAST(julianday(:today) - julianday(COALESCE(s.next_review_at, :today)) AS INTEGER))
    470	FROM user_word_stat s
-   471	WHERE s.user_id = :uid AND s.next_review_at IS NOT NULL
-   472	  AND s.next_review_at <= :today
+   471	WHERE s.user_id = :uid
+   472	  AND EXISTS (SELECT 1 FROM word w2 WHERE w2.id = s.word_id AND w2.is_deleted = 0)
    473	  AND NOT EXISTS (SELECT 1 FROM review_queue q
    474	                  WHERE q.user_id = s.user_id AND q.date = :today
    475	                    AND q.word_id = s.word_id AND q.is_reshow = 0)
@@ -479,7 +479,7 @@
    479	              ELSE 0 END DESC,
    480	         s.proficiency ASC,                          -- 同层高危优先
    481	         s.word_id ASC
-   482	LIMIT :remaining;
+   482	-- 无 LIMIT：全量物化（2026-09-23）
    483	-- 取题：SELECT ... FROM review_queue WHERE status='pending' ORDER BY tier, overdue_days DESC
    484	```
    485	**② 仪表盘**：热力图/连续天数 = `daily_activity` 按日期存在性与计数；熟练度分布 = `CASE proficiency` 三桶 GROUP BY；未来 7 天 = `SELECT next_review_at, COUNT(*) … WHERE next_review_at BETWEEN 明日 AND +7d GROUP BY next_review_at`；WPM 趋势 = `typing_record` 按日 AVG（可按 source）。
@@ -533,7 +533,7 @@
    533	| # | 项 | 类型 | 说明 |
    534	|---|---|---|---|
    535	| T1 | exam_paper 表 | 新增 | AD §6.2 exam_token 落库；answer_key 快照防公共词库中途被改；中断作废=置 void |
-   536	| T2 | review_queue 表 | 新增 | D11「一次且仅一次」、额度截断、溢出排序的库级保证（P1 验收④） |
+   536	| T2 | review_queue 表 | 新增 | D11「一次且仅一次」、全量物化、逾期优先排序的库级保证 |
    537	| T3 | advice_cache 表 | 新增 | 建议缓存 + D28 刷新计数（3 次/日）落库 |
    538	| R1 | typing_record.result | 细化 | 三态枚举替代 is_correct 布尔（近似态需独立落库） |
    539	| R2 | typing_record.request_id + 唯一索引 | 细化 | D19 幂等的库级兜底层 |

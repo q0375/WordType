@@ -21,6 +21,8 @@ onMounted(async () => {
 });
 
 const isPending = (a: any) => !!a?.note?.includes('生成中');
+// AI 回退原因区分：未配置（引导去设置） vs 调用失败
+const adviceUnconfigured = (note: string) => !!note && note.includes('未配置');
 
 let pollTimer: number | null = null;
 let pollTries = 0;
@@ -65,13 +67,26 @@ function actionType(type: string) {
   return type === 'high_error' ? 'danger' : type === 'danger_due' ? 'warning' : type === 'inactive' ? 'info' : 'success';
 }
 
+/**
+ * 建议 → 落地页（2026-10-04 修正）。
+ * 旧实现拿 action.type 去比 'high_error'（那其实是 item.type），永不命中，
+ * 全部建议都靠兜底跳 /practice —— 两条不同建议落在同一页，且 word_ids 参数被丢弃。
+ * 现按 action.type 正确分发：
+ *   practice+word_ids → 练习并直接带上那批词开跑；无词则回退练习配置页
+ *   typing_drill      → 暂不提供跳转（系统无「指法训练」模块，指法数据只在建议文案里展示，
+ *                       跳游戏/统计都与「去执行」语义不符）→ 返回空串，模板隐藏按钮
+ *   none/未知         → 同上，无处可去就别给假入口
+ */
 function actionRoute(item: any): string {
   const t = item?.action?.type as string | undefined;
   if (t === 'books') return '/books';
   if (t === 'review') return '/review';
   if (t === 'study_plan') return '/study';
-  if (t === 'high_error' || t === 'typing_drill') return '/practice';
-  return '/practice';
+  if (t === 'practice') {
+    const ids: number[] = Array.isArray(item?.action?.params?.word_ids) ? item.action.params.word_ids : [];
+    return ids.length ? `/practice?word_ids=${ids.join(',')}` : '/practice';
+  }
+  return '';
 }
 
 const maxForecast = ref(1);
@@ -91,9 +106,13 @@ const maxForecast = ref(1);
             <span>💡 今日建议（{{ advice?.engine === 'llm' ? 'AI 模型' : advice ? '规则引擎' : '加载中…' }}）</span>
             <div class="head-right">
               <el-tag v-if="advice && isPending(advice)" type="primary" size="small">AI 生成中，稍候自动更新…</el-tag>
-              <el-tooltip v-else-if="advice?.note" :content="advice.note" placement="top">
-                <el-tag type="warning" size="small">AI 调用失败，已回退 ⓘ</el-tag>
-              </el-tooltip>
+              <template v-else-if="advice?.note">
+                <el-tooltip :content="advice.note" placement="top">
+                  <el-tag v-if="adviceUnconfigured(advice.note)" type="info" size="small">AI 未配置，正在用规则引擎 ⓘ</el-tag>
+                  <el-tag v-else type="warning" size="small">AI 调用失败，已回退 ⓘ</el-tag>
+                </el-tooltip>
+                <el-button v-if="adviceUnconfigured(advice.note)" text size="small" type="primary" @click="router.push('/settings')">去配置</el-button>
+              </template>
               <el-button v-if="advice" text size="small" @click="refreshAdvice">换一批</el-button>
             </div>
           </div>
@@ -101,7 +120,7 @@ const maxForecast = ref(1);
         <div v-if="advice?.items?.length" class="advice-list">
           <div v-for="item in advice.items" :key="item.type" class="advice-item">
             <el-tag :type="actionType(item.type)" size="small">{{ item.message }}</el-tag>
-            <el-button size="small" text type="primary" @click="router.push(actionRoute(item))">去执行</el-button>
+            <el-button v-if="actionRoute(item)" size="small" text type="primary" @click="router.push(actionRoute(item))">去执行</el-button>
           </div>
         </div>
         <el-skeleton v-else :rows="3" animated />

@@ -127,9 +127,9 @@ def main() -> None:
 
     # 设置 + 仪表盘 + 建议 + 导出
     s = c.get("/settings", headers=h).json()
-    assert s["daily_new_limit"] == 20
-    s2 = c.put("/settings", headers=h, json={"daily_new_limit": 30, "dictation_show_seconds": 2}).json()
-    assert s2["daily_new_limit"] == 30 and s2["dictation_show_seconds"] == 2
+    assert s["daily_review_limit"] == 100
+    s2 = c.put("/settings", headers=h, json={"daily_review_limit": 120, "dictation_show_seconds": 2}).json()
+    assert s2["daily_review_limit"] == 120 and s2["dictation_show_seconds"] == 2
     d = c.get("/stats/dashboard", headers=h).json()
     assert d["today"]["new_learned"] >= 2
     a = c.get("/advice", headers=h).json()
@@ -146,6 +146,12 @@ def main() -> None:
     r = c.post("/auth/login", json={"username": uname, "password": "newpass99x"})
     assert r.status_code == 200
     print("password/pwd_ver ok")
+
+    # 收尾：注销测试账号，避免反复跑测试留下垃圾用户
+    tok2 = r.json()["token"]
+    r = c.post("/account/deactivate", headers={"Authorization": f"Bearer {tok2}"})
+    assert r.status_code == 204, f"{r.status_code} {r.text}"
+    print("cleanup: test account deactivated")
 
     print("\nALL SMOKE TESTS PASSED")
 

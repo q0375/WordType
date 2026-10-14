@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4F8CFF"/>
+      <stop offset="1" stop-color="#7C4DFF"/>
+    </linearGradient>
+    <linearGradient id="wg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3D7BFF"/>
+      <stop offset="1" stop-color="#7C4DFF"/>
+    </linearGradient>
+  </defs>
+  <!-- 渐变圆角底 -->
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <!-- 键帽：底部阴影层 + 白色帽体（立体感） -->
+  <rect x="9" y="10" width="46" height="38" rx="9" fill="#000000" opacity="0.20"/>
+  <rect x="9" y="7" width="46" height="38" rx="9" fill="#ffffff"/>
+  <!-- W 字（描边路径，圆角笔触） -->
+  <path d="M20 18.5 L26.5 34.5 L32 23 L37.5 34.5 L44 18.5" fill="none" stroke="url(#wg)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 打字光标下划线 -->
+  <rect x="21" y="51" width="22" height="4.5" rx="2.25" fill="#ffffff" opacity="0.92"/>
+</svg>

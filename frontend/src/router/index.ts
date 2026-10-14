@@ -26,7 +26,8 @@ const router = createRouter({
 // 守卫：未登录重定向（B1）；admin 路由鉴权
 router.beforeEach((to) => {
   const auth = useAuthStore();
-  if (to.meta.guest && auth.isLoggedIn) return { name: 'dashboard' };
+  // 登出流程中放行 guest 页：此时会话尚有效（考核守卫要先完成交卷决策），登出在导航成功后执行
+  if (to.meta.guest && auth.isLoggedIn && !auth.isLoggingOut()) return { name: 'dashboard' };
   if (!to.meta.guest && !auth.isLoggedIn) return { name: 'login', query: { redirect: to.fullPath } };
   if (to.meta.admin && !auth.isAdmin) return { name: 'dashboard' };
   return true;

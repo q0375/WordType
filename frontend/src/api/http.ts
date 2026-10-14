@@ -53,9 +53,9 @@ http.interceptors.response.use(
       }
       if (!handling401) {
         handling401 = true;
-        if (code === 'AUTH_PWD_CHANGED') ElMessage.error('密码已变更，请重新登录');
-        else if (code === 'AUTH_DEACTIVATED') ElMessage.error('账号已注销，30 天内可联系管理员恢复');
-        else ElMessage.error('登录已过期，请重新登录');
+        if (code === 'AUTH_PWD_CHANGED') ElMessage.error({ message: '密码已变更，请重新登录', duration: 2000, showClose: true });
+        else if (code === 'AUTH_DEACTIVATED') ElMessage.error({ message: '账号已注销，30 天内可联系管理员恢复', duration: 2000, showClose: true });
+        else ElMessage.error({ message: '登录已过期，请重新登录', duration: 2000, showClose: true });
         const auth = useAuthStore();
         auth.logout();
         router.push('/login');
@@ -63,7 +63,7 @@ http.interceptors.response.use(
       }
     } else if (code !== 'QUOTA_EXCEEDED') {
       // 业务错误 toast；配额类由页面自行展示
-      ElMessage.error(data.message || '请求失败');
+      ElMessage.error({ message: data.message || '请求失败', duration: 2000, showClose: true });
     }
     return Promise.reject(new ApiError(code, data.message || '请求失败', resp.status, data.detail));
   },

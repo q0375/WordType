@@ -22,6 +22,9 @@ logger = logging.getLogger("wordtype")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    from .core.config import verify_secrets
+
+    verify_secrets(get_settings())  # 公网部署禁止默认密钥启动
     from .db.init_db import init_db
 
     await init_db()
@@ -42,9 +45,16 @@ def create_app() -> FastAPI:
     app = FastAPI(title=get_settings().app_name, version=get_settings().version, lifespan=lifespan)
     s = get_settings()
 
+    # 局域网开放：允许本机 / 私有网段（含手机热点 192.168.137.x）来源。
+    # 生产由 nginx 同源反代，请求不带 Origin，不受此处影响。
+    _LAN_ORIGIN = (
+        r"^https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|"
+        r"192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$"
+    )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_origins=[],
+        allow_origin_regex=_LAN_ORIGIN,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

@@ -4,6 +4,8 @@
 
 /* ========== 主题变量（浅色默认 / html.dark 深色） ========== */
 :root {
+  --wt-nav-h: 61px;            /* 顶栏总高 = 60px 内容 + 1px 底边框。页面容器 min-height 扣它，
+                                  否则文档总高恒为 100vh+残差，每页都能多滚出一段（2026-10-04 实测 1px）*/
   --wt-bg: #f8fafc;            /* 页面背景 */
   --wt-card-bg: #ffffff;       /* 卡片/面板背景 */
   --wt-border: #e5e7eb;        /* 常规边框 */
@@ -56,4 +58,10 @@ select {
 
 .shell {
   min-height: 100vh;
+}
+
+/* 确认框/自定义选项的键盘高亮（core/confirm.ts 的方向键导航会打上该 class） */
+.kb-nav-focus {
+  outline: 2px solid var(--wt-primary);
+  outline-offset: 1px;
 }

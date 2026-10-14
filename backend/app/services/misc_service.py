@@ -19,6 +19,7 @@ from ..models import (
     TypingRecord, UserWordStat, WrongBookItem, Word,
 )
 from . import llm_advice as llm_advice_mod
+from . import system_config
 from .stat_ops import get_word, touch_wrongbook
 
 # 后台 LLM 建议生成中去重（user_id, date）
@@ -74,6 +75,25 @@ async def patch_wrongbook(db: AsyncSession, user, word_id: int, pinned: int | No
     if resolved is not None:
         row.resolved = resolved
         row.resolved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if resolved else None
+
+
+async def batch_patch_wrongbook(db: AsyncSession, user, word_ids: list[int], pinned: int | None, resolved: int | None) -> int:
+    """批量改错题状态（2026-10-04 批量移出）。只动本人条目，不存在的 ID 静默跳过；返回实际更新行数。"""
+    if not word_ids:
+        return 0
+    rows = (
+        await db.execute(
+            select(WrongBookItem).where(WrongBookItem.user_id == user.id, WrongBookItem.word_id.in_(word_ids))
+        )
+    ).scalars().all()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for row in rows:
+        if pinned is not None:
+            row.pinned = pinned
+        if resolved is not None:
+            row.resolved = resolved
+            row.resolved_at = now if resolved else None
+    return len(rows)
 
 
 # ---------- 统计 ----------
@@ -170,19 +190,41 @@ async def dashboard(db: AsyncSession, user) -> dict:
     }
 
 
-async def stats_trend(db: AsyncSession, user, metric: str, source: str | None, days: int) -> list[dict]:
-    if metric not in ("wpm", "accuracy"):
-        raise AppError("VALIDATION_ERROR", "metric 必须为 wpm/accuracy")
-    col = TypingRecord.wpm if metric == "wpm" else TypingRecord.accuracy
+async def stats_trend(db: AsyncSession, user, metric: str, days: int) -> list[dict]:
+    """趋势数据源（2026-09-23）：
+
+    - wpm      = typing_record 每日平均（单词级实时聚合：学习/练习/复习/游戏每答一词写一行，
+                 每词 WPM = 词字符/5 ÷ 输入分钟，stat_ops.word_wpm）——答完一个词统计即刻反映；
+    - accuracy = daily_activity 当日 correct/(correct+wrong)（原 typing_record 方案因两列
+                 从无写入点而恒空，2026-09-23 已修复写入，accuracy 保留日聚合口径）；
+    - volume   = daily_activity 当日 new_count + review_count。
+    """
+    if metric not in ("wpm", "accuracy", "volume"):
+        raise AppError("VALIDATION_ERROR", "metric 必须为 wpm/accuracy/volume")
     since = (date.today() - timedelta(days=days - 1)).isoformat()
-    stmt = (
-        select(func.substr(TypingRecord.created_at, 1, 10).label("d"), func.avg(col))
-        .where(TypingRecord.user_id == user.id, TypingRecord.created_at >= since, col.is_not(None))
-    )
-    if source and source != "all":
-        stmt = stmt.where(TypingRecord.source == source)
-    rows = (await db.execute(stmt.group_by(text("d")).order_by(text("d")))).all()
-    return [{"date": r[0], "value": round(r[1] or 0, 3)} for r in rows]
+    if metric == "wpm":
+        rows = (
+            await db.execute(
+                select(func.substr(TypingRecord.created_at, 1, 10).label("d"), func.avg(TypingRecord.wpm))
+                .where(TypingRecord.user_id == user.id, TypingRecord.created_at >= since, TypingRecord.wpm.is_not(None))
+                .group_by(text("d")).order_by(text("d"))
+            )
+        ).all()
+        return [{"date": r[0], "value": round(r[1] or 0, 1)} for r in rows]
+    rows = (
+        await db.execute(
+            select(DailyActivity)
+            .where(DailyActivity.user_id == user.id, DailyActivity.date >= since)
+            .order_by(DailyActivity.date.asc())
+        )
+    ).scalars().all()
+    if metric == "accuracy":
+        return [
+            {"date": r.date, "value": round(r.correct_count / (r.correct_count + r.wrong_count), 4)}
+            for r in rows
+            if (r.correct_count + r.wrong_count) > 0
+        ]
+    return [{"date": r.date, "value": r.new_count + r.review_count} for r in rows]
 
 
 # ---------- AI 建议 ----------
@@ -366,15 +408,19 @@ async def get_settings_full(db: AsyncSession, user) -> dict:
         db.add(s)
         await db.flush()
     data = {
-        "daily_new_limit": s.daily_new_limit, "daily_review_limit": s.daily_review_limit,
-        "loose_match": s.loose_match, "typing_guide_on": s.typing_guide_on, "tts_on": s.tts_on,
+        "daily_review_limit": s.daily_review_limit,
+        "typing_guide_on": s.typing_guide_on, "tts_on": s.tts_on,
         "review_form": s.review_form, "dictation_show_seconds": s.dictation_show_seconds,
         "practice_group_size": s.practice_group_size, "game_difficulty": s.game_difficulty,
-        "game_limited_mode": s.game_limited_mode, "game_key_sound": s.game_key_sound, "exam_time_limit": s.exam_time_limit,
+        "game_limited_mode": s.game_limited_mode,         "game_key_sound": s.game_key_sound, "exam_time_limit": s.exam_time_limit,
         "advice_engine": getattr(s, "advice_engine", None) or "rule",
-        "exam_pass_score": s.exam_pass_score, "exam_loose_match": s.exam_loose_match,
+        # exam_loose_match 已于 2026-09-19 取消、loose_match 已于 2026-09-20 取消：
+        # 考核按字符正确率连续计分无开关；学习/练习/复习容差固定 1，均不再作为设置项下发
+        "exam_pass_score": s.exam_pass_score,
         "review_wrong_reshow": s.review_wrong_reshow,
         "review_show_meaning": getattr(s, "review_show_meaning", 1),
+        # 全局口径（system_setting，仅管理员可写）：游戏下坠倍数（出现→消失 = 时限 × N）
+        "game_fall_duration_mult": await system_config.get_game_fall_mult(db),
         "server_date": today_str(), "server_tz": "Asia/Shanghai",
     }
     return data

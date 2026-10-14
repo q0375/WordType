@@ -16,8 +16,14 @@ echo "==> 2/7 专用系统用户"
 id -u wordtype >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin wordtype
 
 echo "==> 3/7 同步代码"
+# ⚠️ 只同步代码与前端产物。data/（数据库、用户文件、TTS 缓存）、backup/、.env、venv 一律不碰，
+# 否则 rsync --delete 会把线上用户数据删掉（2026-09-06 事故根因）。
 mkdir -p "$APP_DIR"
-rsync -a --delete "$SRC_DIR/backend/"  "$APP_DIR/backend/"  --exclude venv --exclude __pycache__ --exclude .venv --exclude "*.log"
+rsync -a --delete "$SRC_DIR/backend/app/" "$APP_DIR/backend/app/" --exclude __pycache__
+if [ -d "$SRC_DIR/backend/scripts" ]; then
+  rsync -a --delete "$SRC_DIR/backend/scripts/" "$APP_DIR/backend/scripts/" --exclude __pycache__
+fi
+rsync -a "$SRC_DIR/backend/requirements.txt" "$APP_DIR/backend/requirements.txt"
 mkdir -p "$APP_DIR/frontend"
 rsync -a --delete "$SRC_DIR/frontend/dist/" "$APP_DIR/frontend/dist/"
 mkdir -p "$APP_DIR/backend/data" "$APP_DIR/backend/backup"

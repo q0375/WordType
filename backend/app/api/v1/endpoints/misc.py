@@ -1,6 +1,6 @@
 """错题本 / 统计 / 建议 / 导出 / 健康 端点。"""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ....core.security import encrypt_secret
 from ....db.engine import get_db, get_sessionmaker, now_str, today_str
 from ....models import AdviceCache, User, UserAiConfig
-from ....schemas import UserAiConfigIn, WrongBookIn, WrongBookPatchIn
+from ....schemas import UserAiConfigIn, WrongBookBatchPatchIn, WrongBookIn, WrongBookPatchIn
 from ....services import llm_advice, misc_service, tts_service
 from ..deps import get_current_user
 
@@ -16,9 +16,13 @@ router = APIRouter()
 
 
 @router.get("/tts")
-async def tts(word: str, accent: str = "us"):
-    """单词发音（微软 edge-tts）。匿名可访问：<audio> 标签无法携带 Authorization 头。"""
-    return await tts_service.speak(word, accent)
+async def tts(word: str, request: Request, accent: str = "us"):
+    """单词发音（微软 edge-tts）。匿名可访问：<audio> 标签无法携带 Authorization 头。
+
+    仅对触发上游合成的请求按 IP 限流（缓存命中不限）。
+    """
+    ip = request.client.host if request.client else "unknown"
+    return await tts_service.speak(word, accent, ip)
 
 
 @router.get("/wrongbook")
@@ -41,15 +45,23 @@ async def patch_wrongbook(word_id: int, payload: WrongBookPatchIn, user: User = 
     return Response(status_code=204)
 
 
+@router.patch("/wrongbook")
+async def batch_patch_wrongbook(payload: WrongBookBatchPatchIn, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """批量操作错题（2026-10-04 批量移出）。只动本人条目，返回实际更新行数。"""
+    updated = await misc_service.batch_patch_wrongbook(db, user, payload.word_ids, payload.pinned, payload.resolved)
+    await db.commit()
+    return {"updated": updated}
+
+
 @router.get("/stats/dashboard")
 async def stats_dashboard(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     return await misc_service.dashboard(db, user)
 
 
 @router.get("/stats/trend")
-async def stats_trend(metric: str = "wpm", source: str = "all", days: int = 30,
+async def stats_trend(metric: str = "accuracy", days: int = 30,
                       user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    return {"items": await misc_service.stats_trend(db, user, metric, source, days)}
+    return {"items": await misc_service.stats_trend(db, user, metric, days)}
 
 
 @router.get("/advice")

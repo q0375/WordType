@@ -39,6 +39,7 @@ const navItems: NavItem[] = [
   { id: 'books', path: '/books', title: '词库' },
   { id: 'wrongbook', path: '/wrongbook', title: '错题本' },
   { id: 'statistics', path: '/statistics', title: '统计' },
+  { id: 'profile', path: '/profile', title: '个人中心' },
   { id: 'settings', path: '/settings', title: '设置' },
   { id: 'admin', path: '/admin', title: '管理后台', admin: true },
 ];
@@ -52,10 +53,23 @@ function go(path: string) {
   router.push(path);
 }
 
-function onLogout() {
+async function onLogout() {
   mobileMenuOpen.value = false;
-  auth.logout();
-  router.push('/login');
+  // 登出时序（2026-09-22 修复）：考核进行中退出有组件级路由守卫（提前交卷/继续作答），
+  // 全局守卫又会把已登录用户访问的 guest 页弹回仪表盘，两者需同时满足：
+  //   1) beginLogout 标记 → 全局守卫放行 /login；
+  //   2) 先导航后登出 → 考核守卫弹「提前交卷」时会话仍有效，交卷可成功；
+  //      选「继续作答」→ 导航被取消（failure）→ 不登出，保持登录态继续作答。
+  //   3) 导航成功才真正 logout（吊销 jti + 清本地态），finally 复位标记。
+  auth.beginLogout();
+  try {
+    const failure = await router.push('/login');
+    if (!failure) auth.logout();
+  } catch {
+    /* 导航异常：保守起见保持登录态留在当前页 */
+  } finally {
+    auth.endLogout();
+  }
 }
 </script>
 
@@ -87,7 +101,7 @@ function onLogout() {
           </el-button>
         </el-tooltip>
         <template v-if="auth.isLoggedIn">
-          <span class="username">{{ auth.user?.username }}</span>
+          <span class="username clickable" @click="go('/profile')">{{ auth.displayName }}</span>
           <el-button type="danger" text @click="onLogout">退出</el-button>
         </template>
         <el-button class="menu-toggle" text @click="mobileMenuOpen = !mobileMenuOpen">
@@ -124,7 +138,9 @@ function onLogout() {
   max-width: 1200px;
   margin: 0 auto;
   padding: 0 16px;
-  height: 60px;
+  /* 顶栏总高由 --wt-nav-h 定义（含 1px 底边框），内容区扣掉边框保持 60px 视觉不变。
+     若这里直接用完整变量，实际总高会比变量多出边框 1px，页面 min-height 扣减后仍留残差 */
+  height: calc(var(--wt-nav-h, 61px) - 1px);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -168,6 +184,16 @@ function onLogout() {
 .username {
   font-size: 13px;
   color: var(--wt-text-2);
+}
+.username.clickable {
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.2s, color 0.2s;
+}
+.username.clickable:hover {
+  background: var(--wt-primary-bg);
+  color: var(--wt-primary);
 }
 .menu-toggle {
   display: flex;
